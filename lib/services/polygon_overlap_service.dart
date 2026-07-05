@@ -144,16 +144,16 @@ class PolygonOverlapService {
   ) {
     final base = areaMeters(target.vertices);
     if (base <= 0) return 0.0;
-    final tCreated = target.createdAt;
+    final tCreated = target.claimStamp;
     if (tCreated == null) return base; // 未確定は面積0扱いが妥当だが安全側でbase
 
     double overlap = 0.0;
     for (final other in all) {
       if (other.id == target.id) continue;
       if (!other.confirmed) continue;
-      final oCreated = other.createdAt;
+      final oCreated = other.claimStamp;
       if (oCreated == null) continue;
-      // other の方が新しい（後から作られた）場合のみ上書きされる
+      // other の方が新しく主張された場合のみ上書きされる
       if (!oCreated.isAfter(tCreated)) continue;
       overlap += intersectionAreaMeters(target.vertices, other.vertices);
     }

@@ -17,20 +17,11 @@ workflows:
       - name: Flutter pub get
         script: |
           flutter pub get
-      - name: Generate iOS Podfile / config (Info.plist は上書きしない)
+      - name: Generate iOS config (Podfile はリポジトリの物を使う)
         script: |
-          # 既存 ios プロジェクトをそのまま使う。Podfile 等が無ければ生成のみ行う。
+          # 既存 ios/Podfile はそのまま利用する（platform :ios, '13.0' 済み）。
+          # Generated.xcconfig 等の生成のみ行う。
           flutter build ios --release --no-codesign --config-only
-      - name: Force iOS 13 platform (Firebase は iOS 13+ が必須)
-        script: |
-          cd ios
-          if grep -q "platform :ios" Podfile; then
-            sed -i.bak "s/^# *platform :ios.*/platform :ios, '13.0'/" Podfile
-            sed -i.bak "s/^platform :ios.*/platform :ios, '13.0'/" Podfile
-          else
-            printf "platform :ios, '13.0'\n%s" "$(cat Podfile)" > Podfile
-          fi
-          grep "platform :ios" Podfile || true
       - name: Pod install
         script: |
           cd ios
@@ -78,16 +69,9 @@ workflows:
             --create
           keychain add-certificates
           xcode-project use-profiles
-      - name: Generate config & force iOS 13 platform
+      - name: Generate iOS config (Podfile はリポジトリの物を使う)
         script: |
           flutter build ios --release --no-codesign --config-only
-          cd ios
-          if grep -q "platform :ios" Podfile; then
-            sed -i.bak "s/^# *platform :ios.*/platform :ios, '13.0'/" Podfile
-            sed -i.bak "s/^platform :ios.*/platform :ios, '13.0'/" Podfile
-          else
-            printf "platform :ios, '13.0'\n%s" "$(cat Podfile)" > Podfile
-          fi
       - name: Pod install
         script: |
           cd ios
