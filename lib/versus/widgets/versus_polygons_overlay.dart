@@ -66,13 +66,15 @@ class _VersusPolygonsPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 描画対象を「確定 & active & 頂点 3 個以上」に絞り、createdAt 昇順にソート。
+    // 描画対象を「確定 & active & 頂点 3 個以上」に絞り、claimStamp 昇順にソート。
+    // ★ createdAt ではなく claimStamp（＝最後に主張した時刻）で並べることで、
+    //   後から頂点を追加して塗り返した側が上に描画される（塗り合いの往復）。
     final sorted = polygons
         .where((p) => p.confirmed && p.isActive && p.vertices.length >= 3)
         .toList()
       ..sort((a, b) {
-        final aT = a.createdAt?.millisecondsSinceEpoch ?? 0;
-        final bT = b.createdAt?.millisecondsSinceEpoch ?? 0;
+        final aT = a.claimStamp?.millisecondsSinceEpoch ?? 0;
+        final bT = b.claimStamp?.millisecondsSinceEpoch ?? 0;
         return aT.compareTo(bT);
       });
 

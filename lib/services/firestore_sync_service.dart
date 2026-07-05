@@ -216,13 +216,16 @@ class FirestoreSyncService {
     required List<WalkPolygon> candidates,
   }) async {
     final aRing = a.vertices;
-    if (aRing.length < 3 || a.createdAt == null) return;
+    final aClaim = a.claimStamp;
+    if (aRing.length < 3 || aClaim == null) return;
 
     for (final b in candidates) {
       try {
         if (b.id == a.id) continue;
-        if (!b.confirmed || !b.isActive || b.createdAt == null) continue;
-        if (!a.createdAt!.isAfter(b.createdAt!)) continue;
+        if (!b.confirmed || !b.isActive || b.claimStamp == null) continue;
+        // ★ createdAt ではなく claimStamp で方向を決める。相手より後に主張した
+        //   （頂点を追加した）側が減算する権利を持つ＝塗り返せる。
+        if (!aClaim.isAfter(b.claimStamp!)) continue;
         if (!PolygonClipService.regionsOverlap(b.vertices, aRing)) continue;
 
         final outcome = PolygonClipService.classify(b.vertices, aRing);
@@ -352,6 +355,8 @@ class FirestoreSyncService {
     final photos = await _readAttachedPhotos(battleId, b.id);
     final now = DateTime.now().millisecondsSinceEpoch;
     final createdMs = b.createdAt?.millisecondsSinceEpoch;
+    // 主張時刻は元 B から継承する（減算されても主張の新しさは変わらない）。
+    final claimedMs = b.claimStamp?.millisecondsSinceEpoch ?? createdMs;
 
     // 新 ID
     final refs = List.generate(
@@ -393,6 +398,8 @@ class FirestoreSyncService {
         'holes': <dynamic>[],
         // 元 B の createdAt を継承（減算判定の順序を保つため）
         'createdAt': createdMs,
+        // 主張時刻も継承（塗り合いの往復順序を保つため）
+        'claimedAt': claimedMs,
         'lastModifiedAt': now,
         'subtractedBy': aId,
         'photoIds': assigned[i],

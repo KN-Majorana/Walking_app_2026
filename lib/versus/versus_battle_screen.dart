@@ -106,8 +106,12 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       // Firestore 側のメタと、ローカルの実画像情報（imagePath / hasImageOnDevice）を
       // マージする。ローカルにあれば imagePath を上書き。
       final localById = {for (final p in _photoPins) p.id: p};
+      final remoteIds = <String>{};
       final merged = <PhotoPin>[];
+      // (1) リモートに存在するピン：ローカルに実画像があればそれを優先しつつ、
+      //     polygonId / detached 状態はリモート（正）を採用する。
       for (final remote in list) {
+        remoteIds.add(remote.id);
         final local = localById[remote.id];
         if (local != null && local.hasImageOnDevice) {
           merged.add(local.copyWith(
@@ -118,6 +122,18 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         } else {
           merged.add(remote);
         }
+      }
+      // (2) ★ リモートにまだ無い自分のローカルピンを保持する。
+      //     pending（Firestore 未書き込み）や、確定直後でスナップショットに
+      //     まだ反映されていないピンがこれに当たる。ここで落とすと、3 枚目の
+      //     ピンで多角形が確定した瞬間に 1・2 枚目のピンが画面から消える
+      //     不具合になる。実画像を持つ自分のピンだけを対象にするので、相手の
+      //     ピン（hasImageOnDevice==false）が紛れ込むことはない。
+      for (final local in _photoPins) {
+        if (remoteIds.contains(local.id)) continue;
+        if (!local.hasImageOnDevice) continue;
+        if (_myUid != null && local.ownerUid != _myUid) continue;
+        merged.add(local);
       }
       setState(() {
         _photoPins
@@ -355,6 +371,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       colorId: myColorId,
       vertices: hull,
       createdAt: now,
+      claimedAt: now, // 新規作成＝今この瞬間に主張した
       photoIds: pendingCount.map((p) => p.id).toList(),
       confirmed: true,
     );
@@ -378,14 +395,14 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
     _toast('${colorNames24[myColorId]} の多角形が確定しました');
 
-    // 減算適用（より古い相手の B 群に対して）
+    // 減算適用（より前に主張された相手の B 群に対して）
     final candidates = _polygons
         .where((p) =>
             p.id != polyId &&
             p.confirmed &&
             p.isActive &&
-            p.createdAt != null &&
-            now.isAfter(p.createdAt!))
+            p.claimStamp != null &&
+            now.isAfter(p.claimStamp!))
         .toList();
     await FirestoreSyncService.applyBattleOverride(
       battleId: widget.battleId,
@@ -411,33 +428,46 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       return;
     }
 
+    // ★ 分裂後に同色ピースが複数ある場合でも、新しいピンは「ただ一つ」の
+    //   ピースの頂点になる。まず点を内包するピースを優先（ピースは互いに
+    //   素なので最大 1 つ）、無ければ最近傍ピースを選ぶ。
     WalkPolygon? target;
-    double best = double.infinity;
     for (final p in sameColor) {
-      double d = double.infinity;
-      // ★ 候補頂点集合は attached ピンのみ。detached ピンは除外。
-      final attachedPos = _photoPins
-          .where((ph) =>
-              ph.polygonId == p.id &&
-              !ph.isDetached &&
-              ph.position.latitude != 0.0)
-          .map((ph) => ph.position)
-          .toList();
-      // フォールバック：頂点座標を使う（Firestore の vertices）
-      final iter = attachedPos.isNotEmpty ? attachedPos : p.vertices;
-      for (final v in iter) {
-        final dx = v.longitude - r.position.longitude;
-        final dy = v.latitude - r.position.latitude;
-        final sq = dx * dx + dy * dy;
-        if (sq < d) d = sq;
+      if (p.vertices.length >= 3 &&
+          PolygonClipService.pointInRing(r.position, p.vertices)) {
+        target = p;
+        break;
       }
-      if (d < best) {
-        best = d;
-        target = p;
-      } else if (d == best &&
-          target != null &&
-          (p.createdAt?.isAfter(target.createdAt ?? DateTime(0)) ?? false)) {
-        target = p;
+    }
+    if (target == null) {
+      double best = double.infinity;
+      for (final p in sameColor) {
+        double d = double.infinity;
+        // ★ 候補頂点集合は attached ピンのみ。detached ピンは除外。
+        final attachedPos = _photoPins
+            .where((ph) =>
+                ph.polygonId == p.id &&
+                !ph.isDetached &&
+                ph.position.latitude != 0.0)
+            .map((ph) => ph.position)
+            .toList();
+        // フォールバック：頂点座標を使う（Firestore の vertices）
+        final iter = attachedPos.isNotEmpty ? attachedPos : p.vertices;
+        for (final v in iter) {
+          final dx = v.longitude - r.position.longitude;
+          final dy = v.latitude - r.position.latitude;
+          final sq = dx * dx + dy * dy;
+          if (sq < d) d = sq;
+        }
+        if (d < best) {
+          best = d;
+          target = p;
+        } else if (d == best &&
+            target != null &&
+            (p.claimStamp?.isAfter(target.claimStamp ?? DateTime(0)) ??
+                false)) {
+          target = p;
+        }
       }
     }
     if (target == null) {
@@ -457,11 +487,25 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       polygonId: target.id,
       hasImageOnDevice: true,
     );
-    final newHull = _convexHull([...target.vertices, r.position]);
+    // ★ 頂点集合は「対象ピースに attach された生きたピン + 新ピン」で再構成する。
+    //   （減算で残った clip 頂点ではなくピン実体から凸包を作ることで、対象ピース
+    //   だけが更新され、他ピースを巻き込まない。ローカルにピンが無い場合のみ
+    //   保存済み頂点にフォールバックする。）
+    final attachedPts = _photoPins
+        .where((ph) =>
+            ph.polygonId == target!.id &&
+            !ph.isDetached &&
+            ph.position.latitude != 0.0)
+        .map((ph) => ph.position)
+        .toList();
+    final basePts = attachedPts.isNotEmpty ? attachedPts : target.vertices;
+    final newHull = _convexHull([...basePts, r.position]);
+    final now = DateTime.now();
     final updated = target.copyWith(
       vertices: newHull,
       photoIds: [...target.photoIds, pin.id],
-      lastModifiedAt: DateTime.now(),
+      claimedAt: now, // ★ 頂点追加＝今この瞬間に主張し直した（塗り返しの起点）
+      lastModifiedAt: now,
     );
 
     setState(() {
@@ -475,14 +519,16 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     await FirestoreSyncService.upsertBattlePhoto(widget.battleId, pin);
     _toast('既存の多角形にピンを追加しました');
 
-    // 頂点追加でも古い B に減算がかかる可能性がある
+    // ★ 頂点追加で「主張し直した」ことにより、相手の A（自分より前に主張された
+    //   もの）へ減算がかかる。これが A∩B を B の色へ塗り返す往復を成立させる。
+    final nowClaim = updated.claimStamp ?? now;
     final candidates = _polygons
         .where((p) =>
             p.id != updated.id &&
             p.confirmed &&
             p.isActive &&
-            p.createdAt != null &&
-            (updated.createdAt ?? DateTime.now()).isAfter(p.createdAt!))
+            p.claimStamp != null &&
+            nowClaim.isAfter(p.claimStamp!))
         .toList();
     await FirestoreSyncService.applyBattleOverride(
       battleId: widget.battleId,
