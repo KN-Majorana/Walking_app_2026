@@ -1,0 +1,121 @@
+// ═════════════════════════════════════════════════════════════════════
+// Firestore セキュリティルール（対戦モード単独化 / v6-9）
+//
+//   users/{uid}                       : 本人のみ書込。読取は全ユーザ許可
+//                                       （フレンド追加時の userId 検索用）
+//   users/{uid}/friends/{friendUid}   : 本人のみ読み書き
+//   battles/{battleId}                : challenger / opponent の 2 名のみ
+//     polygons/{polygonId}            : 参加者は読取可
+//                                       書込は参加者 かつ ownerUid を保持
+//                                       （※ 相手による幾何減算を許可するため）
+//     photos/{photoId}                : 参加者は読取可
+//                                       書込は参加者 かつ ownerUid を保持
+//                                       （※ 相手による detached 遷移を許可）
+//
+// ★ Cloud Storage 用のルールは一切書かない（firebase_storage は使用禁止）。
+// ═════════════════════════════════════════════════════════════════════
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── ヘルパー関数 ─────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function battleData(bid) {
+      return get(/databases/$(database)/documents/battles/$(bid)).data;
+    }
+
+    function isBattleParticipant(bid) {
+      return isSignedIn() &&
+        (request.auth.uid == battleData(bid).challengerUid ||
+         request.auth.uid == battleData(bid).opponentUid);
+    }
+
+    // 新規作成時：ownerUid が自分自身であること
+    function isCreatingAsSelf() {
+      return isSignedIn() &&
+        request.auth.uid == request.resource.data.ownerUid;
+    }
+
+    // 更新時：ownerUid が改変されていないこと（他人が減算するときも
+    // ownerUid はオリジナルのまま保つ）
+    function ownerUnchanged() {
+      return request.resource.data.ownerUid == resource.data.ownerUid;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // users/{uid}
+    //   - read はサインイン済みなら誰でも可（フレンド検索のため）
+    //   - write は本人のみ
+    // ─────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+
+      // ── users/{uid}/friends/{friendUid} ──
+      match /friends/{friendUid} {
+        allow read, write: if isSignedIn() && request.auth.uid == uid;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // battles/{battleId}
+    //   - read / update / delete は参加者(challenger / opponent)のみ
+    //   - create は challengerUid が自分自身のときのみ
+    // ─────────────────────────────────────────────────────────
+    match /battles/{battleId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == resource.data.challengerUid ||
+        request.auth.uid == resource.data.opponentUid
+      );
+      allow create: if isSignedIn() &&
+        request.auth.uid == request.resource.data.challengerUid;
+      allow update: if isSignedIn() && (
+        request.auth.uid == resource.data.challengerUid ||
+        request.auth.uid == resource.data.opponentUid
+      );
+      allow delete: if isSignedIn() && (
+        request.auth.uid == resource.data.challengerUid ||
+        request.auth.uid == resource.data.opponentUid
+      );
+
+      // ─── polygons ───
+      //   * 読取: 参加者のみ
+      //   * 作成: 参加者かつ ownerUid=自分
+      //   * 更新: 参加者。ownerUid は不変
+      //     （相手が幾何減算/holes 追加/リング分裂で書き換えるため）
+      //   * 削除: 参加者
+      //     （B ⊂ A の完全包含・分裂時の物理削除で相手が消す場合を含む）
+      match /polygons/{polygonId} {
+        allow read: if isBattleParticipant(battleId);
+        allow create: if isBattleParticipant(battleId) && isCreatingAsSelf();
+        allow update: if isBattleParticipant(battleId) && ownerUnchanged();
+        allow delete: if isBattleParticipant(battleId);
+      }
+
+      // ─── photos ───
+      //   * 読取: 参加者のみ（実画像は Firestore に無いのでメタのみ）
+      //   * 作成: 参加者かつ ownerUid=自分
+      //   * 更新: 参加者。ownerUid は不変
+      //     （相手が attached → detached / polygonId 付け替えを行うため）
+      //   * 削除: 参加者
+      //     （battle cleared 時の一括削除用。個別削除フローは撤去済み）
+      match /photos/{photoId} {
+        allow read: if isBattleParticipant(battleId);
+        allow create: if isBattleParticipant(battleId) && isCreatingAsSelf();
+        allow update: if isBattleParticipant(battleId) && ownerUnchanged();
+        allow delete: if isBattleParticipant(battleId);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // それ以外のドキュメントは全拒否（明示的なデフォルト deny）
+    // ─────────────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

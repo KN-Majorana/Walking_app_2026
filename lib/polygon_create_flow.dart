@@ -7,20 +7,18 @@ import 'models/polygon.dart';
 import 'photo_service.dart';
 import 'services/exif_service.dart';
 import 'widgets/create_method_sheet.dart';
-import 'widgets/color_pick_sheet.dart';
 import 'widgets/photo_source_sheet.dart';
 
 enum PolygonCreateKind { createNew, addExisting }
 
-/// 多角形作成フロー（ステップ A→B→C→D）の結果。
+/// 多角形作成フローの結果。
 ///
-/// v4: 新規作成・既存追加のどちらも「色（colorId）」を選ぶ形に統一。
-/// 既存追加時に「どの多角形へ追加するか」は呼び出し側（map_screen）が
-/// 写真位置から自動選択する。
+/// 対戦モード（v6-9）では **色選択ステップを完全にスキップ** するため、
+/// 呼び出し側から assignedColorId を渡す。色一致判定は呼び出し側で行う。
 class PolygonCreateResult {
   final PolygonCreateKind kind;
 
-  /// 選んだ色（colorPalette24 のインデックス）
+  /// 割り当てられた色（colorPalette24 のインデックス）
   final int colorId;
 
   final String photoPath;
@@ -45,57 +43,39 @@ class PolygonCreateResult {
   });
 }
 
-/// ステップ A→B→C→D を順に進める状態機械。
+/// 撮影フロー状態機械。
+///
+/// 対戦モード（active）中は色選択ステップを飛ばし、割当色に自動固定する。
 class PolygonCreateFlow {
   PolygonCreateFlow._();
 
-  static Future<PolygonCreateResult?> run(
+  /// 対戦モード用エントリ。色はスキップ、[assignedColorId] に固定される。
+  ///
+  /// ── detached ピン除外フィルタの位置 ─────────────────────
+  ///   このフロー内では、pending / attached / detached の判別は行わない
+  ///   （純粋に「写真を取ってくる → 位置と色を用意する」責務のみ）。
+  ///   detached ピンを候補集合から除外する処理は versus_battle_screen 側
+  ///   `_createNewFlow` / `_addExistingFlow` で行っている（そこにも
+  ///   コメント付きで実装が明示されている）。
+  /// ─────────────────────────────────────────────────────
+  static Future<PolygonCreateResult?> runForVersus(
     BuildContext context, {
     required List<WalkPolygon> myConfirmedPolygons,
     required LatLng currentPosition,
+    required String battleId,
+    required int assignedColorId,
   }) async {
-    // 自分が所有する色 → 個数
-    final ownedCounts = <int, int>{};
-    for (final p in myConfirmedPolygons) {
-      if (!p.confirmed || !p.isActive) continue;
-      ownedCounts[p.colorId] = (ownedCounts[p.colorId] ?? 0) + 1;
-    }
-    final hasExisting = ownedCounts.isNotEmpty;
-
     // ── ステップ A：作成方法 ──
-    final method = await CreateMethodSheet.show(
-      context,
-      hasExisting: hasExisting,
-    );
+    final hasExisting = myConfirmedPolygons.any((p) =>
+        p.colorId == assignedColorId && p.confirmed && p.isActive);
+    final method =
+        await CreateMethodSheet.show(context, hasExisting: hasExisting);
     if (method == null || !context.mounted) return null;
 
-    int? colorId;
-
-    if (method == PolygonCreateMethod.createNew) {
-      // ── ステップ B-①：色選択（全24色）──
-      colorId = await ColorPickSheet.show(
-        context,
-        title: '多角形の色を選ぶ',
-        subtitle: 'この色と一致する写真だけがピンになります。',
-      );
-    } else {
-      // ── ステップ B-②(v4)：所有色のみから選択 ──
-      final owned = ownedCounts.keys.toList()..sort();
-      colorId = await ColorPickSheet.show(
-        context,
-        title: '追加する色を選ぶ',
-        subtitle: '選んだ色の多角形のうち、写真に最も近いものへ追加されます。',
-        allowedColorIds: owned,
-        colorCounts: ownedCounts,
-      );
-    }
-    if (colorId == null || !context.mounted) return null;
-
-    // ── ステップ C：写真取得元 ──
+    // ── ステップ B：写真取得元 ── (色選択はスキップ)
     final source = await PhotoSourceSheet.show(context);
     if (source == null) return null;
 
-    // ── 写真取得 ──
     String? path;
     LatLng position = currentPosition;
     DateTime takenAt = DateTime.now();
@@ -105,10 +85,10 @@ class PolygonCreateFlow {
       try {
         position = await LocationService.getCurrentPosition();
       } catch (_) {}
-      path = await PhotoService.takeAndSavePhoto();
+      path = await PhotoService.takeAndSavePhotoForBattle(battleId);
       if (path == null) return null;
     } else {
-      path = await PhotoService.pickFromGalleryAndSave();
+      path = await PhotoService.pickFromGalleryAndSaveForBattle(battleId);
       if (path == null) return null;
 
       final exif = await ExifService.readExifForFile(path);
@@ -124,14 +104,14 @@ class PolygonCreateFlow {
       }
     }
 
-    // ── ステップ D（前半）：色判定 ──
+    // ── ステップ D（内部処理）：色判定 ──
     final colorIds = await extractColorIdsFromPath(path);
 
     return PolygonCreateResult(
       kind: method == PolygonCreateMethod.createNew
           ? PolygonCreateKind.createNew
           : PolygonCreateKind.addExisting,
-      colorId: colorId,
+      colorId: assignedColorId,
       photoPath: path,
       colorIds: colorIds,
       position: position,
