@@ -54,6 +54,15 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   final List<PhotoPin> _photoPins = [];
   final List<WalkPolygon> _polygons = [];
 
+  /// 端末ローカルに実画像を持つピンのキャッシュ（id → PhotoPin）。
+  /// Firestore の写真ストリームで _photoPins を作り直す際、
+  /// ここに実画像パスを保持しておくことで、
+  ///   * まだ同期されていない pending ピン
+  ///   * 同期途中で remote に一時的に含まれないピン
+  /// が「消える／画像が失われる」のを防ぐ。作成時と起動時に投入し、
+  /// 減算処理では消さない（battle 終了までは残す）。
+  final Map<String, PhotoPin> _localImageCache = {};
+
   StreamSubscription<Battle?>? _battleSub;
   StreamSubscription<List<WalkPolygon>>? _polygonSub;
   StreamSubscription<List<PhotoPin>>? _photoSub;
@@ -104,19 +113,28 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         FirestoreSyncService.watchBattlePhotos(widget.battleId).listen((list) {
       if (!mounted) return;
       // Firestore 側のメタと、ローカルの実画像情報（imagePath / hasImageOnDevice）を
-      // マージする。ローカルにあれば imagePath を上書き。
-      final localById = {for (final p in _photoPins) p.id: p};
+      // マージする。実画像は _localImageCache から復元することで、
+      // 同期途中で remote に一時的に含まれないピンでも画像が失われない。
+      final remoteIds = <String>{};
       final merged = <PhotoPin>[];
       for (final remote in list) {
-        final local = localById[remote.id];
-        if (local != null && local.hasImageOnDevice) {
-          merged.add(local.copyWith(
+        remoteIds.add(remote.id);
+        final cached = _localImageCache[remote.id];
+        if (cached != null && cached.hasImageOnDevice) {
+          // 状態（polygonId / detached）は remote を正とし、画像はローカルを使う。
+          merged.add(cached.copyWith(
             polygonId: remote.polygonId,
             isDetached: remote.isDetached,
             detachedAt: remote.detachedAt,
           ));
         } else {
           merged.add(remote);
+        }
+      }
+      // まだ Firestore に無いローカルピン（pending 等）は消さずに保持する。
+      for (final local in _localImageCache.values) {
+        if (!remoteIds.contains(local.id) && local.hasImageOnDevice) {
+          merged.add(local);
         }
       }
       setState(() {
@@ -142,6 +160,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     if (mounted) {
       setState(() {
         for (final p in localPins) {
+          // 実画像を持つピンはキャッシュへ（消失防止）。
+          if (p.hasImageOnDevice) _localImageCache[p.id] = p;
           if (_photoPins.any((e) => e.id == p.id)) continue;
           _photoPins.add(p);
         }
@@ -326,6 +346,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       hasImageOnDevice: true,
     );
     setState(() {
+      _localImageCache[pin.id] = pin; // 実画像を保持（消失防止）
       _photoPins.add(pin);
     });
     await _saveLocalMirror();
@@ -355,6 +376,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       colorId: myColorId,
       vertices: hull,
       createdAt: now,
+      claimedAt: now, // 新規作成は「今」主張した扱い
       photoIds: pendingCount.map((p) => p.id).toList(),
       confirmed: true,
     );
@@ -378,14 +400,14 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
     _toast('${colorNames24[myColorId]} の多角形が確定しました');
 
-    // 減算適用（より古い相手の B 群に対して）
+    // 減算適用（より古く主張された B 群に対して、claimStamp 基準）
     final candidates = _polygons
         .where((p) =>
             p.id != polyId &&
             p.confirmed &&
             p.isActive &&
-            p.createdAt != null &&
-            now.isAfter(p.createdAt!))
+            p.claimStamp != null &&
+            now.isAfter(p.claimStamp!))
         .toList();
     await FirestoreSyncService.applyBattleOverride(
       battleId: widget.battleId,
@@ -436,7 +458,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         target = p;
       } else if (d == best &&
           target != null &&
-          (p.createdAt?.isAfter(target.createdAt ?? DateTime(0)) ?? false)) {
+          (p.claimStamp?.isAfter(target.claimStamp ?? DateTime(0)) ?? false)) {
         target = p;
       }
     }
@@ -457,14 +479,20 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       polygonId: target.id,
       hasImageOnDevice: true,
     );
+    final now = DateTime.now();
     final newHull = _convexHull([...target.vertices, r.position]);
     final updated = target.copyWith(
       vertices: newHull,
       photoIds: [...target.photoIds, pin.id],
-      lastModifiedAt: DateTime.now(),
+      // ★ 頂点追加は能動的な「主張」なので claimedAt を now に更新する。
+      //   これで、この多角形が相手（例：赤）の新しい領域より前面に来て、
+      //   追加ピン X の内側が自分の色に塗り替わる（孤立を解消）。
+      claimedAt: now,
+      lastModifiedAt: now,
     );
 
     setState(() {
+      _localImageCache[pin.id] = pin; // 実画像を保持（消失防止）
       _photoPins.add(pin);
       final i = _polygons.indexWhere((p) => p.id == updated.id);
       if (i >= 0) _polygons[i] = updated;
@@ -475,14 +503,16 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     await FirestoreSyncService.upsertBattlePhoto(widget.battleId, pin);
     _toast('既存の多角形にピンを追加しました');
 
-    // 頂点追加でも古い B に減算がかかる可能性がある
+    // 頂点追加でも、より古く主張された B に減算がかかる（claimStamp 基準）。
+    // updated.claimStamp は now なので、相手の赤も減算対象になり得る。
+    final updatedStamp = updated.claimStamp ?? now;
     final candidates = _polygons
         .where((p) =>
             p.id != updated.id &&
             p.confirmed &&
             p.isActive &&
-            p.createdAt != null &&
-            (updated.createdAt ?? DateTime.now()).isAfter(p.createdAt!))
+            p.claimStamp != null &&
+            updatedStamp.isAfter(p.claimStamp!))
         .toList();
     await FirestoreSyncService.applyBattleOverride(
       battleId: widget.battleId,

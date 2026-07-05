@@ -34,8 +34,8 @@ class AreaShareCalculator {
         .where((p) => p.isActive && p.vertices.length >= 3 && p.confirmed)
         .toList()
       ..sort((a, b) {
-        final aT = a.createdAt?.millisecondsSinceEpoch ?? 0;
-        final bT = b.createdAt?.millisecondsSinceEpoch ?? 0;
+        final aT = a.claimStamp?.millisecondsSinceEpoch ?? 0;
+        final bT = b.claimStamp?.millisecondsSinceEpoch ?? 0;
         return aT.compareTo(bT);
       });
 

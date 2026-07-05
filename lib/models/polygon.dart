@@ -30,6 +30,12 @@ class WalkPolygon {
   /// 多角形が「確定した」時刻。準備中は null。
   final DateTime? createdAt;
 
+  /// 所有者が能動的に領地を主張した直近時刻。
+  /// 新規作成・頂点追加のときだけ now に更新される。相手に減算されても
+  /// 変化しない（分裂ピースは親の値を継承する）。
+  /// 塗り順・減算方向の判定は createdAt ではなく [claimStamp] を用いる。
+  final DateTime? claimedAt;
+
   /// 最後に減算（領域を奪われた）された時刻。
   final DateTime? lastModifiedAt;
 
@@ -55,6 +61,7 @@ class WalkPolygon {
     required this.createdAt,
     required this.photoIds,
     required this.confirmed,
+    this.claimedAt,
     this.lastModifiedAt,
     this.subtractedBy,
     this.status = 'active',
@@ -63,6 +70,10 @@ class WalkPolygon {
   int get vertexCount => vertices.length;
   bool get isActive => status == 'active';
 
+  /// 塗り順・減算方向を決める実効タイムスタンプ。
+  /// claimedAt があればそれを、無ければ createdAt を用いる。
+  DateTime? get claimStamp => claimedAt ?? createdAt;
+
   WalkPolygon copyWith({
     String? ownerUid,
     String? ownerName,
@@ -70,6 +81,7 @@ class WalkPolygon {
     List<LatLng>? vertices,
     List<List<LatLng>>? holes,
     DateTime? createdAt,
+    DateTime? claimedAt,
     DateTime? lastModifiedAt,
     String? subtractedBy,
     List<String>? photoIds,
@@ -84,6 +96,7 @@ class WalkPolygon {
       vertices: vertices ?? this.vertices,
       holes: holes ?? this.holes,
       createdAt: createdAt ?? this.createdAt,
+      claimedAt: claimedAt ?? this.claimedAt,
       lastModifiedAt: lastModifiedAt ?? this.lastModifiedAt,
       subtractedBy: subtractedBy ?? this.subtractedBy,
       photoIds: photoIds ?? this.photoIds,
@@ -118,6 +131,7 @@ class WalkPolygon {
         // Firestore は配列の直下に配列を置けないため、穴は map で包む。
         'holes': holes.map((h) => {'points': h.map(_ll).toList()}).toList(),
         'createdAt': createdAt?.millisecondsSinceEpoch,
+        'claimedAt': claimedAt?.millisecondsSinceEpoch,
         'lastModifiedAt': lastModifiedAt?.millisecondsSinceEpoch,
         'subtractedBy': subtractedBy,
         'photoIds': photoIds,
@@ -159,6 +173,7 @@ class WalkPolygon {
     }
 
     final createdMs = map['createdAt'];
+    final claimMs = map['claimedAt'];
     final modMs = map['lastModifiedAt'];
     return WalkPolygon(
       id: map['id'] as String,
@@ -170,6 +185,9 @@ class WalkPolygon {
       createdAt: createdMs == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch((createdMs as num).toInt()),
+      claimedAt: claimMs == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch((claimMs as num).toInt()),
       lastModifiedAt: modMs == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch((modMs as num).toInt()),

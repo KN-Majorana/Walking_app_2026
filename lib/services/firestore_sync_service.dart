@@ -216,13 +216,15 @@ class FirestoreSyncService {
     required List<WalkPolygon> candidates,
   }) async {
     final aRing = a.vertices;
-    if (aRing.length < 3 || a.createdAt == null) return;
+    final aStamp = a.claimStamp;
+    if (aRing.length < 3 || aStamp == null) return;
 
     for (final b in candidates) {
       try {
         if (b.id == a.id) continue;
-        if (!b.confirmed || !b.isActive || b.createdAt == null) continue;
-        if (!a.createdAt!.isAfter(b.createdAt!)) continue;
+        if (!b.confirmed || !b.isActive || b.claimStamp == null) continue;
+        // A の方が新しく主張された場合のみ B を減算する（claimStamp 基準）。
+        if (!aStamp.isAfter(b.claimStamp!)) continue;
         if (!PolygonClipService.regionsOverlap(b.vertices, aRing)) continue;
 
         final outcome = PolygonClipService.classify(b.vertices, aRing);
@@ -352,6 +354,8 @@ class FirestoreSyncService {
     final photos = await _readAttachedPhotos(battleId, b.id);
     final now = DateTime.now().millisecondsSinceEpoch;
     final createdMs = b.createdAt?.millisecondsSinceEpoch;
+    // 分裂ピースは親の claimStamp を継承する（減算されても主張時刻は変えない）。
+    final claimMs = b.claimStamp?.millisecondsSinceEpoch ?? createdMs;
 
     // 新 ID
     final refs = List.generate(
@@ -391,8 +395,9 @@ class FirestoreSyncService {
         'colorId': b.colorId,
         'vertices': pieces[i].map(_llm).toList(),
         'holes': <dynamic>[],
-        // 元 B の createdAt を継承（減算判定の順序を保つため）
+        // 元 B の createdAt / claimStamp を継承（減算判定の順序を保つため）
         'createdAt': createdMs,
+        'claimedAt': claimMs,
         'lastModifiedAt': now,
         'subtractedBy': aId,
         'photoIds': assigned[i],
