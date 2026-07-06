@@ -101,8 +101,11 @@ class PolygonClipService {
           lng0 + p.x / mPerLng,
         );
 
-    final s = subject.map(proj).toList();
-    final c = clip.map(proj).toList();
+    // ★ Weiler–Atherton の輪郭走査は subject / clip がともに CCW である前提。
+    //   入力の周回方向が CW/CCW 混在だと走査が壊れ、分裂すべき形が1本の
+    //   不正リングに化けて split されない。ここで両方を CCW に正規化する。
+    final s = _ensureCcw(subject.map(proj).toList());
+    final c = _ensureCcw(clip.map(proj).toList());
 
     try {
       final result = _weilerAthertonDifference(s, c);
@@ -125,7 +128,18 @@ class PolygonClipService {
         return const PolyDiffResult.unchanged();
       }
 
-      if (result.isEmpty) return const PolyDiffResult.consumed();
+      // ★ W-A が有効な輪郭を作れなかった場合、無条件に consumed（＝B削除）に
+      //   すると、実際には覆われていない B まで消してしまう（分裂すべき形が
+      //   退化ケースとして消滅扱いになり、元ドキュメント削除だけ実行され
+      //   分裂ピースが生成されない不具合の原因）。
+      //   B が本当に A に完全包含されているときだけ consumed、それ以外は
+      //   安全側で unchanged（B を壊さない）にする。
+      if (result.isEmpty) {
+        final subjectInClip = s.every((p) => _pointInPoly(p, c));
+        return subjectInClip
+            ? const PolyDiffResult.consumed()
+            : const PolyDiffResult.unchanged();
+      }
 
       final outers = <List<LatLng>>[];
       for (final ring in result) {
@@ -134,7 +148,12 @@ class PolygonClipService {
           outers.add(_ensureCcw(cleaned).map(unproj).toList());
         }
       }
-      if (outers.isEmpty) return const PolyDiffResult.consumed();
+      if (outers.isEmpty) {
+        final subjectInClip = s.every((p) => _pointInPoly(p, c));
+        return subjectInClip
+            ? const PolyDiffResult.consumed()
+            : const PolyDiffResult.unchanged();
+      }
       return PolyDiffResult(
         outers: outers,
         holes: const [],
@@ -177,7 +196,10 @@ class PolygonClipService {
       }
     }
     if (records.isEmpty) return null;
-    if (records.length.isOdd) return []; // 退化 → 安全側で消滅扱いを避け空
+    // 交点数が奇数＝頂点接触などの退化ケース。ここで [] を返すと呼び出し側で
+    // consumed（B削除）に化けてしまうため、null を返して包含判定に委ねる
+    // （＝実際に包含していなければ unchanged になり、B を消さない）。
+    if (records.length.isOdd) return null;
 
     // 拡張リスト（交点挿入）
     final sNodes = <_Nd>[];
