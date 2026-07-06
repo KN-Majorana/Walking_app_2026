@@ -492,13 +492,17 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       hasImageOnDevice: true,
     );
     final now = DateTime.now();
-    final newHull = _convexHull([...target.vertices, r.position]);
+    // ★ 新頂点 X を「既存の頂点配列」に挿入する（凸包で作り直さない）。
+    //   凸包にすると、相手に食い込まれてできた凹み頂点が捨てられてしまう。
+    //   仕様：X に最も近い既存頂点を求め、その「次」との間に X を挿入する。
+    //   例）[1,2,3,4,5] で最近傍が 3 なら → [1,2,3,X,4,5]。
+    final newRing = _insertVertexNearest(target.vertices, r.position);
     final updated = target.copyWith(
-      vertices: newHull,
+      vertices: newRing,
       photoIds: [...target.photoIds, pin.id],
       // ★ 頂点追加は能動的な「主張」なので claimedAt を now に更新する。
       //   これで、この多角形が相手（例：赤）の新しい領域より前面に来て、
-      //   追加ピン X の内側が自分の色に塗り替わる（孤立を解消）。
+      //   多角形の内側が自分の色に塗り返される。
       claimedAt: now,
       lastModifiedAt: now,
     );
@@ -616,6 +620,28 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     } finally {
       _reevaluating = false;
     }
+  }
+
+  /// 既存の頂点リング [ring] に、新頂点 [x] を挿入して返す。
+  /// [x] に最も近い既存頂点を探し、その「次」の頂点との間に挿入する。
+  ///   例）ring=[1,2,3,4,5] で最近傍が 3 → [1,2,3,X,4,5]
+  /// 凹み（相手に食い込まれた形）を保持したまま頂点を1つ増やせる。
+  List<LatLng> _insertVertexNearest(List<LatLng> ring, LatLng x) {
+    if (ring.length < 2) return [...ring, x];
+    int nearest = 0;
+    double best = double.infinity;
+    for (int i = 0; i < ring.length; i++) {
+      final dx = ring[i].longitude - x.longitude;
+      final dy = ring[i].latitude - x.latitude;
+      final sq = dx * dx + dy * dy;
+      if (sq < best) {
+        best = sq;
+        nearest = i;
+      }
+    }
+    final out = List<LatLng>.from(ring);
+    out.insert(nearest + 1, x); // 最近傍の「次」との間に挿入（末尾なら先頭との間）
+    return out;
   }
 
   List<LatLng> _convexHull(List<LatLng> points) {
