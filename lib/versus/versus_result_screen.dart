@@ -69,8 +69,8 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
     _battleSub = BattleService.watchBattle(widget.battleId).listen((b) async {
       if (!mounted) return;
       if (b == null) {
-        // cleared → 対戦データが完全消去された。ローカル写真も消してロビーへ。
-        await FirestoreSyncService.purgeBattleLocal(widget.battleId);
+        // cleared → 対戦データが完全消去された。端末内の写真・座標も消してロビーへ。
+        await FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
@@ -80,7 +80,7 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
       }
       setState(() => _battle = b);
       if (b.status == BattleStatus.cleared) {
-        await FirestoreSyncService.purgeBattleLocal(widget.battleId);
+        await FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),

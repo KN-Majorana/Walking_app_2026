@@ -172,7 +172,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   void _onBattle(Battle? b) {
     if (!mounted) return;
     if (b == null) {
-      // cleared など → ロビーへ
+      // cleared など → 端末内の対戦データ（写真・座標）を消してロビーへ。
+      FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
         (_) => false,
@@ -193,6 +194,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     if (b.status == BattleStatus.declined ||
         b.status == BattleStatus.expired ||
         b.status == BattleStatus.cleared) {
+      // 対戦終了 → 端末内の対戦データ（写真・座標）を消去してロビーへ。
+      FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
         (_) => false,

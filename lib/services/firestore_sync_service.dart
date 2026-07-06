@@ -10,7 +10,9 @@ import '../models/polygon.dart';
 import '../photo_pin.dart';
 import 'battle_service.dart';
 import 'firebase_auth_service.dart';
+import 'photo_pin_storage_service.dart';
 import 'polygon_clip_service.dart';
+import 'polygon_overlap_service.dart';
 
 /// 対戦モードでの Firestore データ同期を担うサービス。
 ///
@@ -225,9 +227,16 @@ class FirestoreSyncService {
         if (!b.confirmed || !b.isActive || b.claimStamp == null) continue;
         // A の方が新しく主張された場合のみ B を減算する（claimStamp 基準）。
         if (!aStamp.isAfter(b.claimStamp!)) continue;
-        if (!PolygonClipService.regionsOverlap(b.vertices, aRing)) continue;
 
-        final outcome = PolygonClipService.classify(b.vertices, aRing);
+        // ★ 方針A：減算の基準は「保存済み vertices」ではなく
+        //   B に属する非detachedピンの座標（画像が無くても lat/lng は残る）
+        //   の凸包から毎回再計算する。これにより過去の減算結果を
+        //   破壊的に上書き累積して外周が歪む問題を防ぐ。
+        final bBase = await _baseRingFromPins(battleId, b);
+        if (bBase.length < 3) continue;
+        if (!PolygonClipService.regionsOverlap(bBase, aRing)) continue;
+
+        final outcome = PolygonClipService.classify(bBase, aRing);
         final now = DateTime.now().millisecondsSinceEpoch;
 
         switch (outcome.kind) {
@@ -247,6 +256,8 @@ class FirestoreSyncService {
 
           case SubtractKind.holed:
             await BattleService.polygonsOf(battleId).doc(b.id).set({
+              // 外周はピン凸包で正規化（累積防止）。穴は視覚差分として保持。
+              'vertices': bBase.map(_llm).toList(),
               'holes': [
                 {'points': outcome.hole!.map(_llm).toList()}
               ],
@@ -289,6 +300,7 @@ class FirestoreSyncService {
     final polyRef = BattleService.polygonsOf(battleId).doc(b.id);
 
     final survivingIds = <String>[];
+    final survivingPos = <LatLng>[];
     for (final ph in photos) {
       // A の内側に入った点 → detached
       final inA = PolygonClipService.pointInRing(ph.position, aRing);
@@ -303,13 +315,26 @@ class FirestoreSyncService {
             SetOptions(merge: true));
       } else {
         survivingIds.add(ph.id);
+        survivingPos.add(ph.position);
       }
+    }
+
+    // ★ 方針A：外周は「生き残ったピンの凸包」で再計算する（累積防止）。
+    //   ピンが3枚未満（手動投入など）のときだけ幾何差分の newRing を使う。
+    List<LatLng> ring;
+    if (survivingPos.length >= 3) {
+      final hull = PolygonOverlapService.convexHull(survivingPos);
+      ring = hull.length >= 3 ? hull : newRing;
+    } else {
+      ring = newRing;
     }
 
     batch.set(
         polyRef,
         {
-          'vertices': newRing.map(_llm).toList(),
+          'vertices': ring.map(_llm).toList(),
+          // 累積した穴が残らないようクリア（視覚差分はオーバーレイが担う）。
+          'holes': <dynamic>[],
           'photoIds': survivingIds,
           'lastModifiedAt': now,
           'subtractedBy': aId,
@@ -317,6 +342,25 @@ class FirestoreSyncService {
         SetOptions(merge: true));
 
     await batch.commit();
+  }
+
+  /// 減算の基準となる外周リング（方針A）。
+  /// その多角形に属する非detachedピンの座標（画像有無に関わらず lat/lng は
+  /// Firestore に残る）の凸包を返す。ピンが3枚未満のときは保存済み
+  /// [WalkPolygon.vertices] にフォールバックする（手動投入・旧データ対策）。
+  static Future<List<LatLng>> _baseRingFromPins(
+      String battleId, WalkPolygon b) async {
+    final photos = await _readAttachedPhotos(battleId, b.id);
+    final pts = <LatLng>[];
+    for (final p in photos) {
+      if (p.position.latitude == 0.0 && p.position.longitude == 0.0) continue;
+      pts.add(p.position);
+    }
+    if (pts.length >= 3) {
+      final hull = PolygonOverlapService.convexHull(pts);
+      if (hull.length >= 3) return hull;
+    }
+    return b.vertices;
   }
 
   // ── consumed：B を物理削除、B に紐づく全 PhotoPin を detached へ ──
@@ -361,6 +405,7 @@ class FirestoreSyncService {
     final refs = List.generate(
         pieces.length, (_) => BattleService.polygonsOf(battleId).doc());
     final assigned = List.generate(pieces.length, (_) => <String>[]);
+    final assignedPos = List.generate(pieces.length, (_) => <LatLng>[]);
     final detached = <PhotoPin>[];
 
     for (final ph in photos) {
@@ -379,6 +424,7 @@ class FirestoreSyncService {
       if (target < 0) target = _nearestPiece(ph.position, pieces);
       if (target >= 0) {
         assigned[target].add(ph.id);
+        assignedPos[target].add(ph.position);
       } else {
         detached.add(ph);
       }
@@ -388,12 +434,21 @@ class FirestoreSyncService {
     batch.delete(BattleService.polygonsOf(battleId).doc(b.id));
 
     for (int i = 0; i < pieces.length; i++) {
+      // ★ 方針A：ピースの外周は、そのピースに割り当てられたピンの凸包にする
+      //   （頂点＝ピン。3枚以上あるとき）。3枚未満なら幾何差分のピースを使う。
+      List<LatLng> pieceRing;
+      if (assignedPos[i].length >= 3) {
+        final hull = PolygonOverlapService.convexHull(assignedPos[i]);
+        pieceRing = hull.length >= 3 ? hull : pieces[i];
+      } else {
+        pieceRing = pieces[i];
+      }
       batch.set(refs[i], {
         'id': refs[i].id,
         'ownerUid': b.ownerUid,
         'ownerName': b.ownerName,
         'colorId': b.colorId,
-        'vertices': pieces[i].map(_llm).toList(),
+        'vertices': pieceRing.map(_llm).toList(),
         'holes': <dynamic>[],
         // 元 B の createdAt / claimStamp を継承（減算判定の順序を保つため）
         'createdAt': createdMs,
@@ -482,6 +537,18 @@ class FirestoreSyncService {
       if (await dir.exists()) {
         await dir.delete(recursive: true);
       }
+    } catch (_) {}
+  }
+
+  /// 対戦終了時（cleared / 対戦ドキュメント消滅）に、端末に残る対戦データを
+  /// すべて消去する。
+  ///   * 写真の実ファイル（battles/{battleId}/photos/ ディレクトリ）
+  ///   * 写真ピンのローカルミラー（photo_pins.json：座標・色などのメタ）
+  /// 対戦モードは同時に1件しか成立しないため、ミラーは全消去でよい。
+  static Future<void> purgeBattleLocalAll(String battleId) async {
+    await purgeBattleLocal(battleId);
+    try {
+      await PhotoPinStorageService.clearAll();
     } catch (_) {}
   }
 
