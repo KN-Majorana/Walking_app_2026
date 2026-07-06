@@ -1,9 +1,9 @@
 workflows:
   # ──────────────────────────────────────────────
   # 署名なし IPA（Apple Developer アカウント不要）
-  #   生成物 build/ios/iphoneos/Runner.ipa は「未署名」のため、
-  #   App Store / TestFlight では配布できません。
-  #   実機に入れる場合は Sideloadly / AltStore 等で再署名・サイドロードが必要です。
+  #   生成物 build/ios/iphoneos/Runner.ipa は「未署名」です。
+  #   App Store / TestFlight には出せません。実機に入れるには
+  #   Sideloadly / AltStore 等で再署名してサイドロードします。
   # ──────────────────────────────────────────────
   ios-unsigned:
     name: iOS Unsigned IPA
@@ -17,90 +17,24 @@ workflows:
       - name: Flutter pub get
         script: |
           flutter pub get
-      - name: Generate iOS Podfile / config (Info.plist は上書きしない)
+      - name: Generate iOS config (config only, no signing)
         script: |
-          # 既存 ios プロジェクトをそのまま使う。Podfile 等が無ければ生成のみ行う。
+          # ios/Podfile はリポジトリのものを使用。Generated.xcconfig 等のみ生成。
           flutter build ios --release --no-codesign --config-only
-      - name: Force iOS 13 platform (Firebase は iOS 13+ が必須)
-        script: |
-          cd ios
-          if grep -q "platform :ios" Podfile; then
-            sed -i.bak "s/^# *platform :ios.*/platform :ios, '13.0'/" Podfile
-            sed -i.bak "s/^platform :ios.*/platform :ios, '13.0'/" Podfile
-          else
-            printf "platform :ios, '13.0'\n%s" "$(cat Podfile)" > Podfile
-          fi
-          grep "platform :ios" Podfile || true
       - name: Pod install
         script: |
           cd ios
           pod install --repo-update
       - name: Build unsigned .app and package as .ipa
         script: |
+          set -e
           flutter build ios --release --no-codesign
           cd build/ios/iphoneos
+          rm -rf Payload Runner.ipa
           mkdir -p Payload
           mv Runner.app Payload/
           zip -r Runner.ipa Payload >/dev/null
+          echo "生成: $(pwd)/Runner.ipa"
     artifacts:
       - build/ios/iphoneos/Runner.ipa
       - /tmp/xcodebuild_logs/*.log
-
-  # ──────────────────────────────────────────────
-  # 署名あり IPA（Apple Developer 加入後に使用）
-  #   Codemagic の自動コード署名を使い、実機 / TestFlight 配布が可能。
-  #   事前に Codemagic 側で以下を設定すること:
-  #     - App Store Connect API キーを連携（Teams → Integrations → App Store Connect）
-  #     - Bundle ID を自分の一意な値に変更（例 com.yourname.walkapp）
-  #     - integrations.app_store_connect を連携名に合わせる
-  # ──────────────────────────────────────────────
-  ios-signed:
-    name: iOS Signed IPA (App Store Connect)
-    instance_type: mac_mini_m2
-    max_build_duration: 90
-    environment:
-      flutter: stable
-      xcode: latest
-      cocoapods: default
-      vars:
-        BUNDLE_ID: "com.example.test" # ← 自分の一意な Bundle ID に変更
-    integrations:
-      app_store_connect: codemagic_api_key # ← Codemagic 上の API キー連携名に合わせる
-    scripts:
-      - name: Flutter pub get
-        script: |
-          flutter pub get
-      - name: Set up code signing (automatic)
-        script: |
-          keychain initialize
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --create
-          keychain add-certificates
-          xcode-project use-profiles
-      - name: Generate config & force iOS 13 platform
-        script: |
-          flutter build ios --release --no-codesign --config-only
-          cd ios
-          if grep -q "platform :ios" Podfile; then
-            sed -i.bak "s/^# *platform :ios.*/platform :ios, '13.0'/" Podfile
-            sed -i.bak "s/^platform :ios.*/platform :ios, '13.0'/" Podfile
-          else
-            printf "platform :ios, '13.0'\n%s" "$(cat Podfile)" > Podfile
-          fi
-      - name: Pod install
-        script: |
-          cd ios
-          pod install --repo-update
-      - name: Build signed ipa
-        script: |
-          flutter build ipa --release \
-            --export-options-plist=/Users/builder/export_options.plist
-    artifacts:
-      - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
-    publishing:
-      # TestFlight に上げる場合のみ有効化（API キー連携が前提）
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
