@@ -623,25 +623,47 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   }
 
   /// 既存の頂点リング [ring] に、新頂点 [x] を挿入して返す。
-  /// [x] に最も近い既存頂点を探し、その「次」の頂点との間に挿入する。
-  ///   例）ring=[1,2,3,4,5] で最近傍が 3 → [1,2,3,X,4,5]
-  /// 凹み（相手に食い込まれた形）を保持したまま頂点を1つ増やせる。
+  /// [x] に最も近い「辺」（連続する2頂点の線分）を探し、その2頂点の間に
+  /// 挿入する。これで x の方向へ自然に膨らみ、凹み（相手に食い込まれた形）を
+  /// 保持したまま頂点を1つ増やせる。
+  ///   例）辺(3,4) が最近傍なら ring=[1,2,3,4,5] → [1,2,3,X,4,5]
+  /// （最近傍「頂点」の次に固定すると、x が逆側にあるとき不自然なスパイクに
+  ///   なるため、最近傍「辺」に挿入する。）
   List<LatLng> _insertVertexNearest(List<LatLng> ring, LatLng x) {
     if (ring.length < 2) return [...ring, x];
-    int nearest = 0;
+    int bestEdge = 0;
     double best = double.infinity;
     for (int i = 0; i < ring.length; i++) {
-      final dx = ring[i].longitude - x.longitude;
-      final dy = ring[i].latitude - x.latitude;
-      final sq = dx * dx + dy * dy;
-      if (sq < best) {
-        best = sq;
-        nearest = i;
+      final a = ring[i];
+      final b = ring[(i + 1) % ring.length];
+      final d = _pointSegDist2(x, a, b);
+      if (d < best) {
+        best = d;
+        bestEdge = i;
       }
     }
     final out = List<LatLng>.from(ring);
-    out.insert(nearest + 1, x); // 最近傍の「次」との間に挿入（末尾なら先頭との間）
+    out.insert(bestEdge + 1, x); // 最近傍の辺 (bestEdge, bestEdge+1) の間に挿入
     return out;
+  }
+
+  /// 点 p と線分 a-b の距離の二乗（x=lng, y=lat 平面）。
+  double _pointSegDist2(LatLng p, LatLng a, LatLng b) {
+    final dx = b.longitude - a.longitude;
+    final dy = b.latitude - a.latitude;
+    final len2 = dx * dx + dy * dy;
+    double t = 0;
+    if (len2 > 0) {
+      t = ((p.longitude - a.longitude) * dx + (p.latitude - a.latitude) * dy) /
+          len2;
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+    }
+    final cx = a.longitude + t * dx;
+    final cy = a.latitude + t * dy;
+    final ex = p.longitude - cx;
+    final ey = p.latitude - cy;
+    return ex * ex + ey * ey;
   }
 
   List<LatLng> _convexHull(List<LatLng> points) {
