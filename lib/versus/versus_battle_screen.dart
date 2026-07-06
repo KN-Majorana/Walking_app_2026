@@ -562,6 +562,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
               p.vertices.length >= 3)
           .toList();
 
+      // ── cutter 側：自分（新しい方）が、より古い相手を減算・分割する ──
       for (final a in mine) {
         final candidates = _polygons
             .where((p) =>
@@ -579,6 +580,35 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
           battleId: widget.battleId,
           a: a,
           candidates: candidates,
+        );
+      }
+
+      // ── victim 側：自分の多角形が「より新しい相手」に食い込まれた分を、
+      //   自分のドキュメントへ反映する（相手に端末が無いデモでも、また
+      //   相手が別端末で置いた場合でも、食い込み＝updatedSingle を永続化する）。
+      //   分割は cutter 側に委ねる（allowSplit=false）ので二重生成しない。
+      final newerOpponents = _polygons
+          .where((p) =>
+              p.ownerUid != me &&
+              p.confirmed &&
+              p.isActive &&
+              p.claimStamp != null &&
+              p.vertices.length >= 3)
+          .toList();
+      for (final a in newerOpponents) {
+        final myVictims = mine
+            .where((mp) =>
+                mp.id != a.id &&
+                a.claimStamp!.isAfter(mp.claimStamp!) &&
+                // 既にこの A で減算済みの自分の多角形はスキップ（ループ防止）。
+                mp.subtractedBy != a.id)
+            .toList();
+        if (myVictims.isEmpty) continue;
+        await FirestoreSyncService.applyBattleOverride(
+          battleId: widget.battleId,
+          a: a,
+          candidates: myVictims,
+          allowSplit: false, // 分割は cutter 側のみ
         );
       }
     } catch (_) {

@@ -216,6 +216,11 @@ class FirestoreSyncService {
     required String battleId,
     required WalkPolygon a,
     required List<WalkPolygon> candidates,
+    // 分割（別ドキュメント生成）を許可するか。
+    //   cutter 側（新しい方の owner が相手を減算する経路）では true。
+    //   victim 側（自分の多角形が新しい相手に食い込まれた分を自分へ反映する
+    //   経路）では false にして、分割の二重生成を防ぐ（分割は cutter 側のみ）。
+    bool allowSplit = true,
   }) async {
     final aRing = a.vertices;
     final aStamp = a.claimStamp;
@@ -271,13 +276,16 @@ class FirestoreSyncService {
             break;
 
           case SubtractKind.split:
-            await _splitB(
-              battleId: battleId,
-              b: b,
-              pieces: outcome.pieces!,
-              aRing: aRing,
-              aId: a.id,
-            );
+            // 分割は cutter 側でのみ実行（victim 側は分割せず、cutter に委ねる）。
+            if (allowSplit) {
+              await _splitB(
+                battleId: battleId,
+                b: b,
+                pieces: outcome.pieces!,
+                aRing: aRing,
+                aId: a.id,
+              );
+            }
             break;
         }
       } catch (_) {
@@ -300,7 +308,6 @@ class FirestoreSyncService {
     final polyRef = BattleService.polygonsOf(battleId).doc(b.id);
 
     final survivingIds = <String>[];
-    final survivingPos = <LatLng>[];
     for (final ph in photos) {
       // A の内側に入った点 → detached
       final inA = PolygonClipService.pointInRing(ph.position, aRing);
@@ -315,24 +322,18 @@ class FirestoreSyncService {
             SetOptions(merge: true));
       } else {
         survivingIds.add(ph.id);
-        survivingPos.add(ph.position);
       }
     }
 
-    // ★ 方針A：外周は「生き残ったピンの凸包」で再計算する（累積防止）。
-    //   ピンが3枚未満（手動投入など）のときだけ幾何差分の newRing を使う。
-    List<LatLng> ring;
-    if (survivingPos.length >= 3) {
-      final hull = PolygonOverlapService.convexHull(survivingPos);
-      ring = hull.length >= 3 ? hull : newRing;
-    } else {
-      ring = newRing;
-    }
-
+    // ★ 外周は「幾何差分の実際の形（newRing）」を保存する。
+    //   これが食い込まれた凹多角形（例：6頂点）で、見た目と一致する。
+    //   累積歪みは起きない：次回の減算入力は毎回 _baseRingFromPins
+    //   （ピン凸包）から作り直すため、保存済み vertices はフィードバック
+    //   されない。
     batch.set(
         polyRef,
         {
-          'vertices': ring.map(_llm).toList(),
+          'vertices': newRing.map(_llm).toList(),
           // 累積した穴が残らないようクリア（視覚差分はオーバーレイが担う）。
           'holes': <dynamic>[],
           'photoIds': survivingIds,
