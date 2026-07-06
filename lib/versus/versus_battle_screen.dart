@@ -70,6 +70,9 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   bool _forceEndDialogOpen = false;
 
+  /// 減算リアクティブ処理の再入ガード（ストリーム連鎖による多重実行防止）。
+  bool _reevaluating = false;
+
   @override
   void initState() {
     super.initState();
@@ -107,6 +110,12 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
           ..clear()
           ..addAll(list);
       });
+      // ★ ポリゴン集合が変わるたびに減算を再評価する。
+      //   claim 時（作成/頂点追加）だけでなく、相手の多角形が現れた/変わった
+      //   瞬間にも「新しい方（＝自分の多角形）の owner 端末」が、より古い
+      //   相手多角形を分割・別ドキュメント化する（相手が手動投入/別端末で
+      //   置いた場合もカバー）。
+      _reevaluateOverrides();
     });
 
     _photoSub =
@@ -522,6 +531,61 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       a: updated,
       candidates: candidates,
     );
+  }
+
+  // ─── 減算リアクティブ再評価 ───
+  //   ポリゴン集合が更新されるたびに呼ばれる。自分（＝新しい方になり得る側）
+  //   が owner の確定・active 多角形について、より古く主張された多角形を
+  //   applyBattleOverride で減算・分割する。分割ピースの owner は被減算側
+  //   （相手）のまま（_splitB が ownerUid を継承）。
+  //
+  //   ループ防止:
+  //     * _reevaluating で再入を防ぐ。
+  //     * 候補から「その A で既に処理済み（subtractedBy == a.id）」を除外する。
+  //       claim 時の明示呼び出し（_createNewFlow/_addExistingFlow）はこの
+  //       ガードを通さないので、青が成長したときは毎回きちんと再カットされる。
+  Future<void> _reevaluateOverrides() async {
+    if (_reevaluating) return;
+    final me = _myUid;
+    final b = _battle;
+    if (me == null || b == null || b.status != BattleStatus.active) return;
+
+    _reevaluating = true;
+    try {
+      // 自分が owner の確定・active・頂点3以上の多角形（＝減算する側 A）
+      final mine = _polygons
+          .where((p) =>
+              p.ownerUid == me &&
+              p.confirmed &&
+              p.isActive &&
+              p.claimStamp != null &&
+              p.vertices.length >= 3)
+          .toList();
+
+      for (final a in mine) {
+        final candidates = _polygons
+            .where((p) =>
+                p.id != a.id &&
+                p.confirmed &&
+                p.isActive &&
+                p.claimStamp != null &&
+                a.claimStamp!.isAfter(p.claimStamp!) &&
+                // ★ この A で既に減算済みの相手はスキップ（ストリーム連鎖の
+                //   無限ループ防止）。
+                p.subtractedBy != a.id)
+            .toList();
+        if (candidates.isEmpty) continue;
+        await FirestoreSyncService.applyBattleOverride(
+          battleId: widget.battleId,
+          a: a,
+          candidates: candidates,
+        );
+      }
+    } catch (_) {
+      // 失敗しても次のストリーム更新で再試行される
+    } finally {
+      _reevaluating = false;
+    }
   }
 
   List<LatLng> _convexHull(List<LatLng> points) {
