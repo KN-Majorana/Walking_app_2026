@@ -36,36 +36,19 @@ dependencies:
   image_picker: ^1.2.2
   path_provider: ^2.1.5
   path: ^1.9.1
-  shared_preferences: ^2.2.2
   opencv_dart: ^2.2.1+4
 
-  # Firebase（対戦モード: 認証 / Firestore / Storage）
+  # Firebase（対戦モード: 認証 / Firestore のみ）
+  # ★ firebase_storage は使用禁止。写真はローカル保管のみ。
   firebase_core: ^3.6.0
   firebase_auth: ^5.3.1
   cloud_firestore: ^5.4.4
-  firebase_storage: ^12.3.2
 
   # EXIF読み取り
   exif: ^3.3.0
 
   # ファイル選択（複数写真）
   file_picker: ^8.1.2
-
-  # CSV共有・エクスポート
-  share_plus: ^10.0.3
-
-  # 日時フォーマット
-  intl: ^0.19.0
-
-  # カメラロール保存
-  image_gallery_saver: ^2.0.3
-
-  # パーミッション管理
-  permission_handler: ^11.3.1
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
 
 dev_dependencies:
   flutter_test:

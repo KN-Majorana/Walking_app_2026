@@ -1,0 +1,777 @@
+// ═════════════════════════════════════════════════════════════════════
+// 対戦モード（active）画面。
+//
+// ★ 相手プレイヤーのピンは地図上に一切表示しない。
+//   相手の存在は「相手の色で塗られた多角形」だけで可視化する。
+//   Firestore の battle 配下 photos ドキュメント自体はデータ整合性のため
+//   相手のものも同期されるが、UI 描画時にオーナ判定で除外する。
+//   ゲーム性の含意：相手がどこにピンを置いたかは対戦中に一切分からない。
+//   相手の色の多角形の出現・拡大でのみ相手の動きが可視化される。
+// ═════════════════════════════════════════════════════════════════════
+
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+
+import '../color_extraction.dart';
+import '../current_location_marker.dart';
+import '../location_service.dart';
+import '../models/battle.dart';
+import '../models/polygon.dart';
+import '../photo_pin.dart';
+import '../photo_pin_marker.dart';
+import '../polygon_create_flow.dart';
+import '../services/battle_service.dart';
+import '../services/firebase_auth_service.dart';
+import '../services/firestore_sync_service.dart';
+import '../services/photo_pin_storage_service.dart';
+import '../services/polygon_clip_service.dart';
+import 'dialogs/force_end_confirm_dialog.dart';
+import 'versus_lobby_screen.dart';
+import 'versus_result_screen.dart';
+import 'widgets/versus_polygons_overlay.dart';
+
+class VersusBattleScreen extends StatefulWidget {
+  final String battleId;
+  const VersusBattleScreen({super.key, required this.battleId});
+
+  @override
+  State<VersusBattleScreen> createState() => _VersusBattleScreenState();
+}
+
+class _VersusBattleScreenState extends State<VersusBattleScreen> {
+  final MapController _mapController = MapController();
+
+  LatLng _currentPosition = const LatLng(35.1815, 136.9066);
+  bool _hasLocation = false;
+
+  Battle? _battle;
+  String? _myUid;
+
+  final List<PhotoPin> _photoPins = [];
+  final List<WalkPolygon> _polygons = [];
+
+  /// 端末ローカルに実画像を持つピンのキャッシュ（id → PhotoPin）。
+  /// Firestore の写真ストリームで _photoPins を作り直す際、
+  /// ここに実画像パスを保持しておくことで、
+  ///   * まだ同期されていない pending ピン
+  ///   * 同期途中で remote に一時的に含まれないピン
+  /// が「消える／画像が失われる」のを防ぐ。作成時と起動時に投入し、
+  /// 減算処理では消さない（battle 終了までは残す）。
+  final Map<String, PhotoPin> _localImageCache = {};
+
+  StreamSubscription<Battle?>? _battleSub;
+  StreamSubscription<List<WalkPolygon>>? _polygonSub;
+  StreamSubscription<List<PhotoPin>>? _photoSub;
+  Timer? _tick;
+
+  bool _forceEndDialogOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  @override
+  void dispose() {
+    _battleSub?.cancel();
+    _polygonSub?.cancel();
+    _photoSub?.cancel();
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      _currentPosition = await LocationService.getCurrentPosition();
+      _hasLocation = true;
+      if (mounted) setState(() {});
+      _mapController.move(_currentPosition, 15.0);
+    } catch (_) {}
+
+    _myUid = FirebaseAuthService.uid;
+
+    // battle
+    _battleSub = BattleService.watchBattle(widget.battleId).listen(_onBattle);
+
+    // polygons / photos
+    _polygonSub =
+        FirestoreSyncService.watchBattlePolygons(widget.battleId).listen((list) {
+      if (!mounted) return;
+      setState(() {
+        _polygons
+          ..clear()
+          ..addAll(list);
+      });
+    });
+
+    _photoSub =
+        FirestoreSyncService.watchBattlePhotos(widget.battleId).listen((list) {
+      if (!mounted) return;
+      // Firestore 側のメタと、ローカルの実画像情報（imagePath / hasImageOnDevice）を
+      // マージする。実画像は _localImageCache から復元することで、
+      // 同期途中で remote に一時的に含まれないピンでも画像が失われない。
+      final remoteIds = <String>{};
+      final merged = <PhotoPin>[];
+      for (final remote in list) {
+        remoteIds.add(remote.id);
+        final cached = _localImageCache[remote.id];
+        if (cached != null && cached.hasImageOnDevice) {
+          // 状態（polygonId / detached）は remote を正とし、画像はローカルを使う。
+          merged.add(cached.copyWith(
+            polygonId: remote.polygonId,
+            isDetached: remote.isDetached,
+            detachedAt: remote.detachedAt,
+          ));
+        } else {
+          merged.add(remote);
+        }
+      }
+      // まだ Firestore に無いローカルピン（pending 等）は消さずに保持する。
+      for (final local in _localImageCache.values) {
+        if (!remoteIds.contains(local.id) && local.hasImageOnDevice) {
+          merged.add(local);
+        }
+      }
+      setState(() {
+        _photoPins
+          ..clear()
+          ..addAll(merged);
+      });
+      _saveLocalMirror();
+    });
+
+    // 1 秒タイマー（残り時間 & endsAt 到達判定）
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!mounted) return;
+      setState(() {}); // 残り時間更新
+      final b = _battle;
+      if (b != null && b.status == BattleStatus.active && b.isPastEnd) {
+        await BattleService.maybeExpireByTime(widget.battleId);
+      }
+    });
+
+    // 起動時に既にローカルへ保存されている写真ピンを読み込む
+    final localPins = await PhotoPinStorageService.loadAll();
+    if (mounted) {
+      setState(() {
+        for (final p in localPins) {
+          // 実画像を持つピンはキャッシュへ（消失防止）。
+          if (p.hasImageOnDevice) _localImageCache[p.id] = p;
+          if (_photoPins.any((e) => e.id == p.id)) continue;
+          _photoPins.add(p);
+        }
+      });
+    }
+  }
+
+  void _onBattle(Battle? b) {
+    if (!mounted) return;
+    if (b == null) {
+      // cleared など → ロビーへ
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
+        (_) => false,
+      );
+      return;
+    }
+    setState(() => _battle = b);
+    // 状態遷移に応じて画面を切り替える
+    if (b.status == BattleStatus.ended || b.status == BattleStatus.resultShown) {
+      // リザルト画面へ移動（result_shown 化は移動先で行う）
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => VersusResultScreen(battleId: widget.battleId),
+        ),
+      );
+      return;
+    }
+    if (b.status == BattleStatus.declined ||
+        b.status == BattleStatus.expired ||
+        b.status == BattleStatus.cleared) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
+        (_) => false,
+      );
+      return;
+    }
+    // active：強制終了リクエストの受信ポップアップ
+    final myUid = _myUid;
+    if (b.status == BattleStatus.active &&
+        b.forceEndRequestBy != null &&
+        b.forceEndRequestBy != myUid &&
+        !_forceEndDialogOpen) {
+      _showForceEndDialog();
+    }
+  }
+
+  Future<void> _showForceEndDialog() async {
+    _forceEndDialogOpen = true;
+    try {
+      final ok = await ForceEndConfirmDialog.show(context);
+      if (!mounted) return;
+      if (ok == true) {
+        await BattleService.confirmForceEnd(widget.battleId);
+      } else if (ok == false) {
+        await BattleService.cancelForceEnd(widget.battleId);
+      }
+    } finally {
+      _forceEndDialogOpen = false;
+    }
+  }
+
+  Future<void> _requestForceEnd() async {
+    final me = _myUid;
+    if (me == null) return;
+    await BattleService.requestForceEnd(battleId: widget.battleId, byUid: me);
+    if (!mounted) return;
+    // 提案者側の待機ダイアログ
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dctx) => AlertDialog(
+        title: const Text('相手に確認中…'),
+        content: const Text('対戦相手の応答を待っています'),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.of(dctx).pop();
+              await BattleService.cancelForceEnd(widget.battleId);
+            },
+            child: const Text('キャンセル'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _saveLocalMirror() async {
+    try {
+      await PhotoPinStorageService.saveAll(_photoPins);
+    } catch (_) {}
+  }
+
+  // ─── 「多角形を作る」ボタン押下 ───
+  Future<void> _openCreatePolygonFlow() async {
+    final b = _battle;
+    final me = _myUid;
+    if (b == null || me == null || b.status != BattleStatus.active) return;
+
+    final myColorId = b.myColorId(me);
+    if (myColorId == null) return;
+
+    // 自分が確定済みで持っている多角形（自分の色に限定）
+    final myConfirmed = _polygons
+        .where((p) =>
+            p.ownerUid == me &&
+            p.confirmed &&
+            p.isActive &&
+            p.vertices.length >= 3)
+        .toList();
+
+    try {
+      final result = await PolygonCreateFlow.runForVersus(
+        context,
+        myConfirmedPolygons: myConfirmed,
+        currentPosition: _currentPosition,
+        battleId: widget.battleId,
+        assignedColorId: myColorId,
+      );
+      if (result == null) return;
+      if (!mounted) return;
+
+      if (result.usedLocationFallback) {
+        _toast('位置情報が取得できなかったため、現在地・現在時刻で登録します');
+      }
+      if (!result.colorIds.contains(myColorId)) {
+        // 色不一致 → ファイルを破棄
+        try {
+          await File(result.photoPath).delete();
+        } catch (_) {}
+        _toast(
+            'あなたの色（${colorNames24[myColorId]}）と一致しないため追加できません');
+        return;
+      }
+
+      // ピンを追加してグループに attach
+      if (result.kind == PolygonCreateKind.createNew) {
+        await _createNewFlow(result, me, myColorId);
+      } else {
+        await _addExistingFlow(result, me, myColorId, myConfirmed);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _toast('追加に失敗: $e');
+    }
+  }
+
+  // ── 新規多角形フロー ──
+  Future<void> _createNewFlow(
+    PolygonCreateResult r,
+    String me,
+    int myColorId,
+  ) async {
+    // pending グループ（同色・自分・polygonId==null かつ isDetached==false の
+    // ピン群）を探す or 新規 ID を採番。
+    //
+    // detached ピンは pending 判定に含めない（除外フィルタ）。
+    final pendingPins = _photoPins.where((p) =>
+        p.ownerUid == me &&
+        p.polygonId == null &&
+        !p.isDetached && // ★ detached は 3 枚判定に含めない
+        p.colorIds.contains(myColorId)).toList();
+
+    // pending グループの polygonId は「未確定 ID」として仮採番。
+    // 3 枚に到達したら Firestore へ polygon ドキュメントを作成する。
+    String? tempGroupId;
+    if (pendingPins.isNotEmpty) {
+      // 既存 pending の groupId を再利用（先頭ピンの colorId + owner）
+      tempGroupId = 'pending_${me}_$myColorId';
+    } else {
+      tempGroupId = 'pending_${me}_$myColorId';
+    }
+
+    // 新ピンをローカルに追加
+    final pin = PhotoPin(
+      imagePath: r.photoPath,
+      position: r.position,
+      takenAt: r.takenAt,
+      colorIds: r.colorIds,
+      ownerUid: me,
+      polygonId: null, // pending
+      hasImageOnDevice: true,
+    );
+    setState(() {
+      _localImageCache[pin.id] = pin; // 実画像を保持（消失防止）
+      _photoPins.add(pin);
+    });
+    await _saveLocalMirror();
+
+    final pendingCount = _photoPins
+        .where((p) =>
+            p.ownerUid == me &&
+            p.polygonId == null &&
+            !p.isDetached &&
+            p.colorIds.contains(myColorId))
+        .toList();
+
+    if (pendingCount.length < 3) {
+      _toast('${colorNames24[myColorId]} のピンを追加しました（あと ${3 - pendingCount.length} 枚で多角形が確定）');
+      return;
+    }
+
+    // 3 枚以上 → 多角形を確定
+    final positions = pendingCount.map((p) => p.position).toList();
+    final hull = _convexHull(positions);
+    final polyId = 'poly_${DateTime.now().microsecondsSinceEpoch}';
+    final now = DateTime.now();
+    final poly = WalkPolygon(
+      id: polyId,
+      ownerUid: me,
+      ownerName: _battle?.myName(me) ?? '',
+      colorId: myColorId,
+      vertices: hull,
+      createdAt: now,
+      claimedAt: now, // 新規作成は「今」主張した扱い
+      photoIds: pendingCount.map((p) => p.id).toList(),
+      confirmed: true,
+    );
+
+    // ピンの polygonId を付け替え
+    setState(() {
+      for (int i = 0; i < _photoPins.length; i++) {
+        if (pendingCount.any((p) => p.id == _photoPins[i].id)) {
+          _photoPins[i] = _photoPins[i].copyWith(polygonId: polyId);
+        }
+      }
+    });
+    await _saveLocalMirror();
+
+    // Firestore に反映
+    await FirestoreSyncService.upsertBattlePolygon(widget.battleId, poly);
+    for (final p in pendingCount) {
+      final attached = p.copyWith(polygonId: polyId);
+      await FirestoreSyncService.upsertBattlePhoto(widget.battleId, attached);
+    }
+
+    _toast('${colorNames24[myColorId]} の多角形が確定しました');
+
+    // 減算適用（より古く主張された B 群に対して、claimStamp 基準）
+    final candidates = _polygons
+        .where((p) =>
+            p.id != polyId &&
+            p.confirmed &&
+            p.isActive &&
+            p.claimStamp != null &&
+            now.isAfter(p.claimStamp!))
+        .toList();
+    await FirestoreSyncService.applyBattleOverride(
+      battleId: widget.battleId,
+      a: poly,
+      candidates: candidates,
+    );
+  }
+
+  // ── 既存追加フロー（対象は自動選択）──
+  Future<void> _addExistingFlow(
+    PolygonCreateResult r,
+    String me,
+    int myColorId,
+    List<WalkPolygon> myConfirmed,
+  ) async {
+    // 自分の色の多角形のみ候補
+    final sameColor = myConfirmed.where((p) => p.colorId == myColorId).toList();
+    if (sameColor.isEmpty) {
+      try {
+        await File(r.photoPath).delete();
+      } catch (_) {}
+      _toast('対象の多角形が見つかりません');
+      return;
+    }
+
+    WalkPolygon? target;
+    double best = double.infinity;
+    for (final p in sameColor) {
+      double d = double.infinity;
+      // ★ 候補頂点集合は attached ピンのみ。detached ピンは除外。
+      final attachedPos = _photoPins
+          .where((ph) =>
+              ph.polygonId == p.id &&
+              !ph.isDetached &&
+              ph.position.latitude != 0.0)
+          .map((ph) => ph.position)
+          .toList();
+      // フォールバック：頂点座標を使う（Firestore の vertices）
+      final iter = attachedPos.isNotEmpty ? attachedPos : p.vertices;
+      for (final v in iter) {
+        final dx = v.longitude - r.position.longitude;
+        final dy = v.latitude - r.position.latitude;
+        final sq = dx * dx + dy * dy;
+        if (sq < d) d = sq;
+      }
+      if (d < best) {
+        best = d;
+        target = p;
+      } else if (d == best &&
+          target != null &&
+          (p.claimStamp?.isAfter(target.claimStamp ?? DateTime(0)) ?? false)) {
+        target = p;
+      }
+    }
+    if (target == null) {
+      try {
+        await File(r.photoPath).delete();
+      } catch (_) {}
+      _toast('対象の多角形が見つかりません');
+      return;
+    }
+
+    final pin = PhotoPin(
+      imagePath: r.photoPath,
+      position: r.position,
+      takenAt: r.takenAt,
+      colorIds: r.colorIds,
+      ownerUid: me,
+      polygonId: target.id,
+      hasImageOnDevice: true,
+    );
+    final now = DateTime.now();
+    final newHull = _convexHull([...target.vertices, r.position]);
+    final updated = target.copyWith(
+      vertices: newHull,
+      photoIds: [...target.photoIds, pin.id],
+      // ★ 頂点追加は能動的な「主張」なので claimedAt を now に更新する。
+      //   これで、この多角形が相手（例：赤）の新しい領域より前面に来て、
+      //   追加ピン X の内側が自分の色に塗り替わる（孤立を解消）。
+      claimedAt: now,
+      lastModifiedAt: now,
+    );
+
+    setState(() {
+      _localImageCache[pin.id] = pin; // 実画像を保持（消失防止）
+      _photoPins.add(pin);
+      final i = _polygons.indexWhere((p) => p.id == updated.id);
+      if (i >= 0) _polygons[i] = updated;
+    });
+    await _saveLocalMirror();
+
+    await FirestoreSyncService.upsertBattlePolygon(widget.battleId, updated);
+    await FirestoreSyncService.upsertBattlePhoto(widget.battleId, pin);
+    _toast('既存の多角形にピンを追加しました');
+
+    // 頂点追加でも、より古く主張された B に減算がかかる（claimStamp 基準）。
+    // updated.claimStamp は now なので、相手の赤も減算対象になり得る。
+    final updatedStamp = updated.claimStamp ?? now;
+    final candidates = _polygons
+        .where((p) =>
+            p.id != updated.id &&
+            p.confirmed &&
+            p.isActive &&
+            p.claimStamp != null &&
+            updatedStamp.isAfter(p.claimStamp!))
+        .toList();
+    await FirestoreSyncService.applyBattleOverride(
+      battleId: widget.battleId,
+      a: updated,
+      candidates: candidates,
+    );
+  }
+
+  List<LatLng> _convexHull(List<LatLng> points) {
+    if (points.length < 3) return List<LatLng>.from(points);
+    final pts = List<LatLng>.from(points)
+      ..sort((a, b) => a.longitude != b.longitude
+          ? a.longitude.compareTo(b.longitude)
+          : a.latitude.compareTo(b.latitude));
+    double cross(LatLng o, LatLng a, LatLng b) =>
+        (a.longitude - o.longitude) * (b.latitude - o.latitude) -
+        (a.latitude - o.latitude) * (b.longitude - o.longitude);
+    final lower = <LatLng>[];
+    for (final p in pts) {
+      while (lower.length >= 2 &&
+          cross(lower[lower.length - 2], lower.last, p) <= 0) {
+        lower.removeLast();
+      }
+      lower.add(p);
+    }
+    final upper = <LatLng>[];
+    for (final p in pts.reversed) {
+      while (upper.length >= 2 &&
+          cross(upper[upper.length - 2], upper.last, p) <= 0) {
+        upper.removeLast();
+      }
+      upper.add(p);
+    }
+    lower.removeLast();
+    upper.removeLast();
+    return [...lower, ...upper];
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Color _colorFromId(int? id) {
+    if (id == null || id < 0 || id >= colorPalette24.length) {
+      return Colors.grey;
+    }
+    final c = colorPalette24[id];
+    return Color.fromRGBO(c.r, c.g, c.b, 1);
+  }
+
+  String _mmss(Duration d) {
+    final m = d.inMinutes.toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final b = _battle;
+    final myUid = _myUid;
+
+    if (b == null || myUid == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final myColorId = b.myColorId(myUid);
+    final myColor = _colorFromId(myColorId);
+
+    // 残り時間
+    final ends = b.endsAt;
+    final remaining = ends == null
+        ? Duration.zero
+        : ends.difference(DateTime.now());
+    final displayRemain =
+        remaining.isNegative ? Duration.zero : remaining;
+
+    // ── 自分のピンのみ表示（★相手のピンは表示しない） ──
+    final myPins = _photoPins.where((p) => p.ownerUid == myUid).toList();
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _currentPosition,
+              initialZoom: 13,
+              minZoom: 3,
+              maxZoom: 19,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.RunnerTests',
+                maxZoom: 19,
+              ),
+              // ★ 対戦ポリゴン描画（Demotest3-3 方式 + 実行時視覚的減算）
+              //   A∩B は常に A（新しい方）の色のみで塗られる。
+              VersusPolygonsOverlay(
+                polygons: _polygons,
+                myUid: myUid,
+              ),
+              // 自分のピン（detached を含む。detached は透過率を下げて表示）
+              MarkerLayer(
+                markers: [
+                  for (final pin in myPins)
+                    Marker(
+                      point: pin.position,
+                      width: 56,
+                      height: 56,
+                      child: GestureDetector(
+                        onTap: () {
+                          if (!pin.hasImageOnDevice || pin.imagePath.isEmpty) {
+                            return;
+                          }
+                          showDialog<void>(
+                            context: context,
+                            builder: (_) => Dialog(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.file(File(pin.imagePath)),
+                              ),
+                            ),
+                          );
+                        },
+                        // detached は透過率 45%、attached/pending は 100%。
+                        // ★視覚差の採用方式：Opacity で全体を半透明化。
+                        child: Opacity(
+                          opacity: pin.isDetached ? 0.45 : 1.0,
+                          child: PhotoPinMarker(imagePath: pin.imagePath),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              if (_hasLocation)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _currentPosition,
+                      width: 13,
+                      height: 13,
+                      child: const CurrentLocationMarker(),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+
+          // 左上：色バッジ
+          Positioned(
+            top: 0,
+            left: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: const [
+                      BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 4,
+                          offset: Offset(0, 2)),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 16,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          color: myColor,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.black26),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        myColorId != null
+                            ? 'あなた: ${colorNames24[myColorId]}'
+                            : 'あなた',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // 上部中央：カウントダウン
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Text(
+                      _mmss(displayRemain),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // 右上：強制終了ボタン
+          Positioned(
+            top: 0,
+            right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert, color: Colors.black87),
+                  onSelected: (v) {
+                    if (v == 'forceEnd') _requestForceEnd();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                        value: 'forceEnd',
+                        child: Text('対決を強制終了する',
+                            style: TextStyle(color: Colors.red))),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+
+      // 右下：多角形を作るボタン
+      floatingActionButton: FloatingActionButton(
+        heroTag: 'create_polygon',
+        tooltip: '多角形を作る',
+        onPressed: _openCreatePolygonFlow,
+        child: const Icon(Icons.brush),
+      ),
+    );
+  }
+}
+

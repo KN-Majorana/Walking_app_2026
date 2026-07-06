@@ -1,13 +1,18 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 
-/// 地図上に表示される写真サムネイルマーカー
+/// 地図上に表示される写真サムネイルマーカー。
+///
+/// 対戦モードでは、呼び出し側で `Opacity` により detached ピンを半透明
+/// （透過率 45%）にして視覚差を出している（versus_battle_screen 参照）。
+/// この Widget 自身は透過制御は行わず、単純なサムネイル描画に徹する。
 class PhotoPinMarker extends StatelessWidget {
   final String imagePath;
   const PhotoPinMarker({super.key, required this.imagePath});
 
   @override
   Widget build(BuildContext context) {
+    final hasFile = imagePath.isNotEmpty && File(imagePath).existsSync();
     return Container(
       decoration: BoxDecoration(
         shape: BoxShape.circle,
@@ -17,7 +22,7 @@ class PhotoPinMarker extends StatelessWidget {
         ],
       ),
       child: ClipOval(
-        child: imagePath.isNotEmpty && File(imagePath).existsSync()
+        child: hasFile
             ? Image.file(
                 File(imagePath),
                 fit: BoxFit.cover,
