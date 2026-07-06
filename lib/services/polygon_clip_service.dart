@@ -105,7 +105,13 @@ class PolygonClipService {
     //   入力の周回方向が CW/CCW 混在だと走査が壊れ、分裂すべき形が1本の
     //   不正リングに化けて split されない。ここで両方を CCW に正規化する。
     final s = _ensureCcw(subject.map(proj).toList());
-    final c = _ensureCcw(clip.map(proj).toList());
+    // ★ clip（減算する側）を重心から極僅かに拡大してから使う。
+    //   分割で生まれたピースは「相手の辺との交点」を頂点に持つため、
+    //   その頂点が相手の辺上にちょうど乗る「頂点オンエッジ」の退化が起きる。
+    //   すると端点での交差が交点判定から除外され、交点0個→交差なし→unchanged と
+    //   誤判定して食い込み（減算）が反映されない。僅かに拡大すると頂点が辺から
+    //   外れ、通常の横断交差として検出できる（数cm相当・見た目に影響なし）。
+    final c = _ensureCcw(_expandFromCentroid(clip.map(proj).toList(), 1.00005));
 
     try {
       final result = _weilerAthertonDifference(s, c);
@@ -388,6 +394,21 @@ class PolygonClipService {
       out.removeLast();
     }
     return out;
+  }
+
+  /// リングを重心中心に [factor] 倍に拡大する（頂点オンエッジ退化の解消用）。
+  static List<_P> _expandFromCentroid(List<_P> ring, double factor) {
+    if (ring.isEmpty) return ring;
+    double cx = 0, cy = 0;
+    for (final p in ring) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= ring.length;
+    cy /= ring.length;
+    return ring
+        .map((p) => _P(cx + (p.x - cx) * factor, cy + (p.y - cy) * factor))
+        .toList();
   }
 
   static List<_P> _ensureCcw(List<_P> ring) {
