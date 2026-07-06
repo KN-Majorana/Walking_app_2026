@@ -40,6 +40,17 @@ service cloud.firestore {
         request.auth.uid == request.resource.data.ownerUid;
     }
 
+    // 新規作成時：ownerUid が対戦の2参加者のいずれかであること。
+    // 相手による幾何減算（分裂→ピースを別ドキュメントとして再作成）では、
+    // 減算を実行する側（A の作成者）が、相手所有（B の owner）のピースを
+    // create する必要がある。update / delete は既に相手にも許可しているので、
+    // create も「参加者かつ owner が参加者のいずれか」に緩める。
+    function isCreatingForParticipant(bid) {
+      return isSignedIn() &&
+        (request.resource.data.ownerUid == battleData(bid).challengerUid ||
+         request.resource.data.ownerUid == battleData(bid).opponentUid);
+    }
+
     // 更新時：ownerUid が改変されていないこと（他人が減算するときも
     // ownerUid はオリジナルのまま保つ）
     function ownerUnchanged() {
@@ -91,7 +102,10 @@ service cloud.firestore {
       //     （B ⊂ A の完全包含・分裂時の物理削除で相手が消す場合を含む）
       match /polygons/{polygonId} {
         allow read: if isBattleParticipant(battleId);
-        allow create: if isBattleParticipant(battleId) && isCreatingAsSelf();
+        // create: 参加者であれば、owner が参加者のいずれかなら許可。
+        //   自分の多角形の新規作成に加え、相手多角形の分裂ピース再作成を許可する。
+        allow create: if isBattleParticipant(battleId) &&
+          isCreatingForParticipant(battleId);
         allow update: if isBattleParticipant(battleId) && ownerUnchanged();
         allow delete: if isBattleParticipant(battleId);
       }

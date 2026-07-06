@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:latlong2/latlong.dart';
 
 import 'color_extraction.dart';
@@ -48,7 +50,26 @@ class PhotoPin {
     this.hasImageOnDevice = true,
     this.isDetached = false,
     this.detachedAt,
-  }) : id = id ?? '${takenAt.microsecondsSinceEpoch}';
+  }) : id = id ?? _generateUniqueId(takenAt);
+
+  // ─────────────────────────────────────────
+  // 一意な ID 生成
+  // ─────────────────────────────────────────
+  // takenAt.microsecondsSinceEpoch だけを ID にすると、
+  //   * 同じ EXIF 撮影時刻を持つ複数枚
+  //   * Web など時刻分解能がミリ秒の環境で連続生成
+  // のときに ID が衝突し、photos ドキュメントを相互に上書きしてしまう
+  // （多角形の photoIds に同一 ID が並ぶ／写真が 1 枚しか残らない）。
+  // そこで takenAt に加えて、プロセス内カウンタ + 乱数を付与して一意化する。
+  static final Random _rng = Random();
+  static int _seq = 0;
+
+  static String _generateUniqueId(DateTime takenAt) {
+    _seq = (_seq + 1) & 0xFFFFFFF;
+    final seqPart = _seq.toRadixString(36);
+    final randPart = _rng.nextInt(0x7FFFFFFF).toRadixString(36);
+    return '${takenAt.microsecondsSinceEpoch}_${seqPart}_$randPart';
+  }
 
   /// pending 状態か（3 枚判定・新規作成の候補集合の判定に使う）。
   bool get isPending => polygonId == null && !isDetached;
@@ -123,7 +144,8 @@ class PhotoPin {
     }
 
     return PhotoPin(
-      id: json['id'] as String? ?? '${DateTime.now().microsecondsSinceEpoch}',
+      // id が無い旧データは、コンストラクタ側の一意 ID 生成に委ねる（null を渡す）。
+      id: json['id'] as String?,
       imagePath: json['imagePath'] as String? ?? '',
       position: LatLng(
         (json['latitude'] as num).toDouble(),
