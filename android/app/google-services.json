@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "994980821640",
+    "project_id": "walk-app-2026",
+    "storage_bucket": "walk-app-2026.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:994980821640:android:c3f0e6ce45b508755cfd3d",
+        "android_client_info": {
+          "package_name": "com.example.test"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDvgW2CTzU8hO30OvSaaihjuVDjNyGN4QQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
