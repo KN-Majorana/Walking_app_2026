@@ -29,6 +29,13 @@ class LocationService {
     }
   }
 
+  /// 速度など詳細を含む Position の継続ストリームを返す。
+  /// 距離・速度の計測に使う（LatLng だけでは速度が取れないため）。
+  static Stream<Position> watchPositionRaw() async* {
+    await _ensurePermission();
+    yield* Geolocator.getPositionStream(locationSettings: _settings);
+  }
+
   static Future<void> _ensurePermission() async {
     var perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {

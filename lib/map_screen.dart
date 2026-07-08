@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'battle/battle_mode_scope.dart';
@@ -22,6 +23,7 @@ import 'photo_pin.dart';
 import 'photo_pin_marker.dart';
 import 'photo_service.dart';
 import 'recording_controls.dart';
+import 'step_counter_service.dart';
 import 'track_picker_sheet.dart';
 import 'track_storage_service.dart';
 import 'walk_track.dart';
@@ -48,9 +50,19 @@ class _MapScreenState extends State<MapScreen> {
 
   // 記録状態
   WalkTrack? _currentTrack;
-  StreamSubscription<LatLng>? _positionSub;
+  StreamSubscription<Position>? _positionSub;
   Timer? _elapsedTimer;
   Duration _elapsed = Duration.zero;
+
+  // walk_record 由来の計測（距離・速度・歩数）
+  double _distanceMeters = 0;
+  double _speedKmh = 0;
+  int _stepCount = 0;
+  final StepCounterService _stepCounter = StepCounterService();
+  StreamSubscription<int>? _stepSub;
+
+  // 距離計算用
+  static const Distance _distanceCalc = Distance(roundResult: false);
 
   // 過去の散歩記録(起動時に永続ストレージから読み込む)
   final List<WalkTrack> _savedTracks = [];
@@ -76,6 +88,8 @@ class _MapScreenState extends State<MapScreen> {
     _loadSavedTracks();
     _loadPhotoPins();
     _loadFogSettings();
+    // コラージュ(fog)モードでは起動直後から現在地をリアルタイム更新する。
+    _ensureLocationStream();
   }
 
   @override
@@ -83,7 +97,46 @@ class _MapScreenState extends State<MapScreen> {
     _positionSub?.cancel();
     _elapsedTimer?.cancel();
     _ghostTimer?.cancel();
+    _stepSub?.cancel();
+    _stepCounter.dispose();
     super.dispose();
+  }
+
+  /// 位置情報の継続ストリームを、必要なとき（コラージュ表示中 or 記録中）だけ動かす。
+  /// これによりコラージュモード中は記録していなくても現在地マーカーが
+  /// リアルタイムに更新される（対戦画面と同じ挙動）。
+  void _ensureLocationStream() {
+    final shouldRun = _mode == MapMode.fog || _isRecording;
+    if (shouldRun && _positionSub == null) {
+      _positionSub =
+          LocationService.watchPositionRaw().listen(_onPositionUpdate);
+    } else if (!shouldRun && _positionSub != null) {
+      _positionSub!.cancel();
+      _positionSub = null;
+    }
+  }
+
+  /// 位置更新の共通処理。常に現在地を更新し、記録中は軌跡・距離・速度も更新する。
+  void _onPositionUpdate(Position position) {
+    if (!mounted) return;
+    final newPos = LatLng(position.latitude, position.longitude);
+    setState(() {
+      if (_isRecording) {
+        final track = _currentTrack!;
+        if (track.points.isNotEmpty) {
+          _distanceMeters += _distanceCalc(track.points.last.position, newPos);
+        }
+        _speedKmh = position.speed > 0 ? position.speed * 3.6 : 0;
+        _currentTrack = track.copyWith(
+          points: [
+            ...track.points,
+            TrackPoint(position: newPos, timestamp: DateTime.now()),
+          ],
+        );
+      }
+      _currentPosition = newPos;
+      _hasLocation = true;
+    });
   }
 
   Future<void> _loadCurrentLocation() async {
@@ -241,22 +294,21 @@ class _MapScreenState extends State<MapScreen> {
             : [],
       );
       _elapsed = Duration.zero;
+      _distanceMeters = 0;
+      _speedKmh = 0;
+      _stepCount = 0;
     });
 
-    // 位置情報の継続取得
-    _positionSub = LocationService.watchPosition().listen((pos) {
-      if (!mounted || !_isRecording) return;
-      setState(() {
-        _currentPosition = pos;
-        _hasLocation = true;
-        _currentTrack = _currentTrack!.copyWith(
-          points: [
-            ..._currentTrack!.points,
-            TrackPoint(position: pos, timestamp: DateTime.now()),
-          ],
-        );
-      });
+    // 歩数カウント開始（加速度センサー）
+    _stepCounter.reset();
+    _stepCounter.start();
+    _stepSub = _stepCounter.stepStream.listen((steps) {
+      if (!mounted) return;
+      setState(() => _stepCount = steps);
     });
+
+    // 位置情報の継続取得（コラージュ表示中は既に動いているが、念のため保証）
+    _ensureLocationStream();
 
     // 経過時間タイマー(1秒ごと)
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -269,19 +321,26 @@ class _MapScreenState extends State<MapScreen> {
 
   // ─── 記録停止 ───
   Future<void> _stopRecording() async {
-    _positionSub?.cancel();
-    _positionSub = null;
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
+    _stepSub?.cancel();
+    _stepSub = null;
+    _stepCounter.stop();
 
     final count = _currentTrack?.points.length ?? 0;
-    final finished = _currentTrack?.copyWith(endedAt: DateTime.now());
+    final finished = _currentTrack?.copyWith(
+      endedAt: DateTime.now(),
+      stepCount: _stepCount,
+    );
     setState(() {
       _currentTrack = finished;
       if (finished != null && finished.points.isNotEmpty) {
         _savedTracks.add(finished);
       }
     });
+
+    // 記録停止後もコラージュモードなら現在地更新は継続させる。
+    _ensureLocationStream();
 
     if (mounted) {
       ScaffoldMessenger.of(
@@ -310,6 +369,8 @@ class _MapScreenState extends State<MapScreen> {
     } else {
       _stopGhostPlayback();
     }
+    // コラージュモードに入ったら現在地更新を開始、離れたら（記録中でなければ）停止。
+    _ensureLocationStream();
   }
 
   // ─── 再生開始 ───
@@ -479,6 +540,68 @@ class _MapScreenState extends State<MapScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => ColorCollageScreen(colorId: colorId, pins: pins),
+      ),
+    );
+  }
+
+  // ─── 再生モード時の「記録の統計」パネル ───
+  // 再生中の軌跡の合計距離・所要時間・歩数を表示する。
+  Widget _buildPlaybackStats() {
+    final track = _ghost?.track;
+    if (track == null) return const SizedBox.shrink();
+
+    final distance = track.totalDistanceMeters;
+    final distanceText = distance >= 1000
+        ? '${(distance / 1000).toStringAsFixed(2)}km'
+        : '${distance.toStringAsFixed(0)}m';
+
+    final d = track.duration;
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final durationText = h > 0 ? '$h:$m:$s' : '$m:$s';
+
+    Widget item(IconData icon, String value, String label, Color color) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: color,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+          Text(label,
+              style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+        ],
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.white,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              item(Icons.straighten_rounded, distanceText, '距離',
+                  const Color(0xFF185FA5)),
+              item(Icons.timer_outlined, durationText, '時間',
+                  const Color(0xFF2E7D32)),
+              item(Icons.directions_walk_rounded, '${track.stepCount}歩', '歩数',
+                  const Color(0xFF854F0B)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -685,6 +808,9 @@ class _MapScreenState extends State<MapScreen> {
                     isRecording: _isRecording,
                     pointCount: _currentTrack?.points.length ?? 0,
                     elapsed: _elapsed,
+                    distanceMeters: _distanceMeters,
+                    speedKmh: _speedKmh,
+                    stepCount: _stepCount,
                     onStart: _startRecordingFlow,
                     onStop: _stopRecording,
                   ),
@@ -692,7 +818,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
 
-          // ── 下部:軌跡選択カード(再生モード時のみ) ──
+          // ── 下部:再生統計 + 軌跡選択カード(再生モード時のみ) ──
           if (_mode == MapMode.animation)
             Positioned(
               left: 76,
@@ -701,7 +827,13 @@ class _MapScreenState extends State<MapScreen> {
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.only(bottom: 16),
-                  child: _buildTrackPickerButton(),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildPlaybackStats(),
+                      _buildTrackPickerButton(),
+                    ],
+                  ),
                 ),
               ),
             ),

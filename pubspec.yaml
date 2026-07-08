@@ -33,6 +33,9 @@ dependencies:
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
   geolocator: ^14.0.2
+
+  # 加速度センサーによる歩数計測（walk_record の歩数計機能）
+  sensors_plus: ^6.1.0
   image_picker: ^1.2.2
   path_provider: ^2.1.5
   path: ^1.9.1
