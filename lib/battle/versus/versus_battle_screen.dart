@@ -37,8 +37,8 @@ import 'versus_result_screen.dart';
 import 'widgets/versus_polygons_overlay.dart';
 
 /// モード切替バー（地図に重ねて表示）の高さ分、上部 UI を下げるための余白。
-/// バー本体（約40px）＋上下パディング（8px×2）＝約56px に少し余裕を足した値。
-const double _kModeBarSpace = 64;
+/// バー本体（約40px）＋上下パディング（16px×2）＝約72px に少し余裕を足した値。
+const double _kModeBarSpace = 80;
 
 class VersusBattleScreen extends StatefulWidget {
   final String battleId;
@@ -84,6 +84,10 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   static const Duration _locUploadInterval = Duration(seconds: 30);
 
   bool _forceEndDialogOpen = false;
+
+  // 強制終了を申請した側（自分）の「相手に確認中…」待機ダイアログが開いているか。
+  // 相手が承認/拒否したら、遷移前にこのダイアログを閉じる必要がある。
+  bool _forceEndWaitingOpen = false;
 
   /// 減算リアクティブ処理の再入ガード（ストリーム連鎖による多重実行防止）。
   bool _reevaluating = false;
@@ -222,6 +226,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     if (!mounted) return;
     if (b == null) {
       // cleared など → 端末内の対戦データ（写真・座標）を消してロビーへ。
+      _dismissForceEndWaiting();
       FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
@@ -230,9 +235,15 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       return;
     }
     setState(() => _battle = b);
+    // 自分が出した強制終了リクエストが解決した（相手が承認/拒否した、または
+    // リクエストが消えた）ら、申請側の「相手に確認中…」ダイアログを閉じる。
+    if (_forceEndWaitingOpen && b.forceEndRequestBy != _myUid) {
+      _dismissForceEndWaiting();
+    }
     // 状態遷移に応じて画面を切り替える
     if (b.status == BattleStatus.ended || b.status == BattleStatus.resultShown) {
       // リザルト画面へ移動（result_shown 化は移動先で行う）
+      _dismissForceEndWaiting();
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => VersusResultScreen(battleId: widget.battleId),
@@ -244,6 +255,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         b.status == BattleStatus.expired ||
         b.status == BattleStatus.cleared) {
       // 対戦終了 → 端末内の対戦データ（写真・座標）を消去してロビーへ。
+      _dismissForceEndWaiting();
       FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const VersusLobbyScreen()),
@@ -259,6 +271,13 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         !_forceEndDialogOpen) {
       _showForceEndDialog();
     }
+  }
+
+  /// 申請側の「相手に確認中…」待機ダイアログを閉じる（開いている場合のみ）。
+  void _dismissForceEndWaiting() {
+    if (!_forceEndWaitingOpen) return;
+    _forceEndWaitingOpen = false;
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
   Future<void> _showForceEndDialog() async {
@@ -282,6 +301,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     await BattleService.requestForceEnd(battleId: widget.battleId, byUid: me);
     if (!mounted) return;
     // 提案者側の待機ダイアログ
+    _forceEndWaitingOpen = true;
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -291,6 +311,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         actions: [
           TextButton(
             onPressed: () async {
+              _forceEndWaitingOpen = false;
               Navigator.of(dctx).pop();
               await BattleService.cancelForceEnd(widget.battleId);
             },
@@ -299,6 +320,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         ],
       ),
     );
+    _forceEndWaitingOpen = false;
   }
 
   Future<void> _saveLocalMirror() async {
@@ -989,6 +1011,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
           ),
 
           // 最上部中央：モード切替バー（地図に重ねて表示）
+          // パディングはコラージュ/再生モード（map_screen 側の EdgeInsets.all(16)）と
+          // 揃えて、モード間でバー位置が一致するようにしている。
           Positioned(
             top: 0,
             left: 0,
@@ -996,7 +1020,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.all(16),
                 child: Center(child: BattleModeScope.barOf(context)),
               ),
             ),

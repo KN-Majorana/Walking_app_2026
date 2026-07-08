@@ -55,6 +55,9 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
 
   bool _resultCloseDialogOpen = false;
 
+  // リザルト終了を申請した側（自分）の「相手に確認中…」待機ダイアログが開いているか。
+  bool _resultCloseWaitingOpen = false;
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +105,7 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
       if (!mounted) return;
       if (b == null) {
         // cleared → 対戦データが完全消去された。端末内の写真・座標も消してロビーへ。
+        _dismissResultCloseWaiting();
         await FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
@@ -111,7 +115,13 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
         return;
       }
       setState(() => _battle = b);
+      // 自分が出したリザルト終了リクエストが解決した（相手が承認/拒否した）ら、
+      // 申請側の「相手に確認中…」ダイアログを閉じる。
+      if (_resultCloseWaitingOpen && b.resultCloseRequestBy != _myUid) {
+        _dismissResultCloseWaiting();
+      }
       if (b.status == BattleStatus.cleared) {
+        _dismissResultCloseWaiting();
         await FirestoreSyncService.purgeBattleLocalAll(widget.battleId);
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
@@ -188,6 +198,7 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
     await BattleService.requestResultClose(
         battleId: widget.battleId, byUid: me);
     if (!mounted) return;
+    _resultCloseWaitingOpen = true;
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -197,6 +208,7 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
         actions: [
           TextButton(
             onPressed: () async {
+              _resultCloseWaitingOpen = false;
               Navigator.of(dctx).pop();
               await BattleService.cancelResultClose(widget.battleId);
             },
@@ -205,6 +217,14 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
         ],
       ),
     );
+    _resultCloseWaitingOpen = false;
+  }
+
+  /// 申請側の「相手に確認中…」待機ダイアログを閉じる（開いている場合のみ）。
+  void _dismissResultCloseWaiting() {
+    if (!_resultCloseWaitingOpen) return;
+    _resultCloseWaitingOpen = false;
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
   Color _colorFromId(int? id) {

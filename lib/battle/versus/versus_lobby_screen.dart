@@ -221,18 +221,24 @@ class _VersusLobbyScreenState extends State<VersusLobbyScreen> {
 
   /// 画面上部にモード切替バーのバンドを重ねる。ロビーは AppBar を持つため、
   /// バーは AppBar の上（上部バンド）に配置する。
+  /// バンド背景はロビー本体（Scaffold）と同じ色にして、周囲が黒くならないようにする。
+  /// パディングはコラージュ/再生モードのバー（map_screen 側の EdgeInsets.all(16)）と
+  /// 揃えて、モード間でバー位置が一致するようにしている。
   Widget _withModeBar(Widget child) {
-    return Column(
-      children: [
-        SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Center(child: BattleModeScope.barOf(context)),
+    return ColoredBox(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: Column(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Center(child: BattleModeScope.barOf(context)),
+            ),
           ),
-        ),
-        Expanded(child: child),
-      ],
+          Expanded(child: child),
+        ],
+      ),
     );
   }
 
