@@ -29,4 +29,26 @@ class PhotoService {
     await File(xFile.path).copy(destPath);
     return destPath;
   }
+
+  /// フォルダ／ライブラリから選んだ画像ファイルをアプリの写真ディレクトリへ
+  /// コピーして、その保存先パスを返す。EXIF を保つためリサイズはしない。
+  static Future<String?> importPhotoFile(String sourcePath) async {
+    final src = File(sourcePath);
+    if (!src.existsSync()) return null;
+
+    final dir = await getApplicationDocumentsDirectory();
+    final photosDir = Directory(p.join(dir.path, 'photos'));
+    if (!photosDir.existsSync()) {
+      photosDir.createSync(recursive: true);
+    }
+
+    final ext = p.extension(sourcePath).isNotEmpty
+        ? p.extension(sourcePath)
+        : '.jpg';
+    final fileName =
+        'photo_${DateTime.now().microsecondsSinceEpoch}$ext';
+    final destPath = p.join(photosDir.path, fileName);
+    await src.copy(destPath);
+    return destPath;
+  }
 }

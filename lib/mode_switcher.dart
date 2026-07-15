@@ -31,6 +31,13 @@ class ModeSwitcher extends StatelessWidget {
               activeColor: Colors.indigo,
             ),
             _Tab(
+              label: 'マップ',
+              icon: Icons.map_outlined,
+              isSelected: currentMode == MapMode.map,
+              onTap: () => onModeChanged(MapMode.map),
+              activeColor: const Color(0xFF00796B),
+            ),
+            _Tab(
               label: '再生',
               icon: Icons.play_circle_outline,
               isSelected: currentMode == MapMode.animation,
@@ -72,7 +79,7 @@ class _Tab extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
         decoration: BoxDecoration(
           color: isSelected ? activeColor : Colors.transparent,
           borderRadius: BorderRadius.circular(20),

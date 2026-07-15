@@ -13,6 +13,9 @@ class RecordingControls extends StatelessWidget {
   final double speedKmh; // 現在速度(km/h)
   final int stepCount; // 歩数
 
+  /// 開始ボタンのラベル（モードによって変える）
+  final String startLabel;
+
   const RecordingControls({
     super.key,
     required this.isRecording,
@@ -23,6 +26,7 @@ class RecordingControls extends StatelessWidget {
     this.distanceMeters = 0,
     this.speedKmh = 0,
     this.stepCount = 0,
+    this.startLabel = '散歩を記録する',
   });
 
   String _formatDuration(Duration d) {
@@ -56,7 +60,7 @@ class RecordingControls extends StatelessWidget {
           minimumSize: const Size(0, 48),
         ),
         icon: const Icon(Icons.fiber_manual_record, size: 16),
-        label: const Text('散歩を記録する'),
+        label: Text(startLabel),
       );
     }
 

@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'collage_module.dart';
 import 'color_extraction.dart';
 import 'models/completed_collage.dart';
 import 'photo_pin.dart';
@@ -155,6 +156,31 @@ class _ColorCollageScreenState extends State<ColorCollageScreen> {
         ),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
+        actions: [
+          // 既定は現在のデザイン。プリクラ風コラージュを作りたい場合はここから。
+          if (widget.pins.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: TextButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => EditableCollagePage(
+                        imagePaths:
+                            widget.pins.map((p) => p.imagePath).toList(),
+                        availablePins: widget.pins,
+                        initialColorId: widget.colorId,
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.auto_awesome, size: 16),
+                label: const Text('プリクラ風'),
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+              ),
+            ),
+        ],
       ),
       body: _loading
           ? const Center(

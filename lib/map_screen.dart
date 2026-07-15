@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -13,6 +14,7 @@ import 'color_extraction.dart';
 import 'fog_settings_service.dart';
 import 'current_location_marker.dart';
 import 'fog_overlay.dart';
+import 'path_fog_overlay.dart';
 import 'ghost_track.dart';
 import 'location_service.dart';
 import 'map_mode.dart';
@@ -29,6 +31,10 @@ import 'track_storage_service.dart';
 import 'walk_track.dart';
 import 'ghost_marker.dart';
 import 'services/photo_pin_storage_service.dart';
+import 'services/map_fog_storage_service.dart';
+import 'services/photo_display_settings_service.dart';
+import 'services/battle_photo_history_service.dart';
+import 'services/exif_service.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -79,6 +85,18 @@ class _MapScreenState extends State<MapScreen> {
   // 霧クリア設定: ピン間の最大距離（メートル）
   double _fogMaxDistance = FogSettingsService.defaultMaxDistance;
 
+  // ── マップモード ──
+  // これまで歩いて霧を晴らした地点（再起動後も保持）
+  final List<LatLng> _mapClearedPoints = [];
+  // マップモードで霧を晴らす半径（メートル）
+  static const double _mapClearRadius = 30.0;
+
+  // ── 写真表示設定 ──
+  // 対戦モードで撮影した歴代の写真も地図に表示するか
+  bool _showBattlePhotos = false;
+  // 対戦の歴代写真ピン（設定 ON のときだけ読み込む）
+  final List<PhotoPin> _battlePhotoPins = [];
+
   bool get _isRecording => _currentTrack != null && _currentTrack!.isActive;
 
   @override
@@ -88,6 +106,8 @@ class _MapScreenState extends State<MapScreen> {
     _loadSavedTracks();
     _loadPhotoPins();
     _loadFogSettings();
+    _loadMapFog();
+    _loadPhotoDisplaySettings();
     // コラージュ(fog)モードでは起動直後から現在地をリアルタイム更新する。
     _ensureLocationStream();
   }
@@ -106,10 +126,12 @@ class _MapScreenState extends State<MapScreen> {
   /// これによりコラージュモード中は記録していなくても現在地マーカーが
   /// リアルタイムに更新される（対戦画面と同じ挙動）。
   void _ensureLocationStream() {
-    final shouldRun = _mode == MapMode.fog || _isRecording;
+    final shouldRun =
+        _mode == MapMode.fog || _mode == MapMode.map || _isRecording;
     if (shouldRun && _positionSub == null) {
-      _positionSub =
-          LocationService.watchPositionRaw().listen(_onPositionUpdate);
+      _positionSub = LocationService.watchPositionRaw().listen(
+        _onPositionUpdate,
+      );
     } else if (!shouldRun && _positionSub != null) {
       _positionSub!.cancel();
       _positionSub = null;
@@ -133,6 +155,10 @@ class _MapScreenState extends State<MapScreen> {
             TrackPoint(position: newPos, timestamp: DateTime.now()),
           ],
         );
+      }
+      // マップモードで散歩中なら、通過した地点の霧を晴らす。
+      if (_mode == MapMode.map && _isRecording) {
+        _mapClearedPoints.add(newPos);
       }
       _currentPosition = newPos;
       _hasLocation = true;
@@ -191,6 +217,142 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _fogMaxDistance = dist);
   }
 
+  Future<void> _loadMapFog() async {
+    final pts = await MapFogStorageService.loadAll();
+    if (!mounted) return;
+    setState(() {
+      _mapClearedPoints
+        ..clear()
+        ..addAll(pts);
+    });
+  }
+
+  Future<void> _loadPhotoDisplaySettings() async {
+    final show = await PhotoDisplaySettingsService.loadShowBattlePhotos();
+    final battlePins = show
+        ? await BattlePhotoHistoryService.loadAll()
+        : <PhotoPin>[];
+    if (!mounted) return;
+    setState(() {
+      _showBattlePhotos = show;
+      _battlePhotoPins
+        ..clear()
+        ..addAll(battlePins);
+    });
+  }
+
+  /// 地図に表示する写真ピン一覧。
+  /// 既定は「マップ」「コラージュ」で撮った写真。設定 ON なら対戦の歴代写真も。
+  List<PhotoPin> get _displayedPins => [
+    ..._photoPins,
+    if (_showBattlePhotos) ..._battlePhotoPins,
+  ];
+
+  /// 写真の表示設定（対戦の歴代写真を表示するか）を切り替えるシート。
+  Future<void> _openPhotoDisplaySettings() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        bool show = _showBattlePhotos;
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) => SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '表示する写真',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '「マップ」「コラージュ」で撮った写真は常に表示されます。',
+                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('対戦モードの歴代写真も表示'),
+                    subtitle: const Text('過去の対戦で自分が撮った写真を地図に表示します'),
+                    value: show,
+                    onChanged: (v) async {
+                      setSheetState(() => show = v);
+                      await PhotoDisplaySettingsService.saveShowBattlePhotos(v);
+                      await _loadPhotoDisplaySettings();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// フォルダ／ライブラリから位置情報付きの写真を複数選び、ピンとして追加する。
+  /// EXIF に GPS が無い写真はスキップする。
+  Future<void> _addPhotosFromFolder() async {
+    try {
+      final locations = await ExifService.getLocationsFromGallery();
+      if (!mounted) return;
+      if (locations.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('位置情報つきの写真が見つかりませんでした')));
+        return;
+      }
+
+      int added = 0;
+      for (final loc in locations) {
+        final srcPath = loc.imagePath;
+        if (srcPath == null) continue;
+        final saved = await PhotoService.importPhotoFile(srcPath);
+        if (saved == null) continue;
+        final colorIds = await extractColorIdsFromPath(saved);
+        if (!mounted) return;
+        _photoPins.add(
+          PhotoPin(
+            imagePath: saved,
+            position: LatLng(loc.latitude, loc.longitude),
+            takenAt: loc.timestamp ?? DateTime.now(),
+            colorIds: colorIds,
+            // フォルダ取り込みは領域（色クラスタ）作成の対象外
+            capturedDuringWalk: false,
+            capturedMode: _mode == MapMode.map ? 'map' : 'collage',
+          ),
+        );
+        added++;
+      }
+
+      setState(() {});
+      _savePhotoPins();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$added 枚の写真を追加しました')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('写真の追加に失敗: $e')));
+    }
+  }
+
+  /// マップモードの「散歩を開始する」。色クラスタ用の範囲ダイアログは出さず、
+  /// すぐに記録（＝霧晴らし）を開始する。
+  void _startMapWalk() {
+    _startRecording();
+    if (_hasLocation) {
+      setState(() => _mapClearedPoints.add(_currentPosition));
+    }
+  }
+
   /// 「散歩の範囲は？」ダイアログを表示する。
   /// ここで選んだ距離が、同じ色の写真同士を同じ領域として
   /// コラージュ作成の対象にする範囲（霧クリア距離）として使われる。
@@ -235,8 +397,14 @@ class _MapScreenState extends State<MapScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('100 m', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-                    Text('5 km', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+                    Text(
+                      '100 m',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    ),
+                    Text(
+                      '5 km',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    ),
                   ],
                 ),
               ],
@@ -339,8 +507,13 @@ class _MapScreenState extends State<MapScreen> {
       }
     });
 
-    // 記録停止後もコラージュモードなら現在地更新は継続させる。
+    // 記録停止後もコラージュ／マップモードなら現在地更新は継続させる。
     _ensureLocationStream();
+
+    // マップモードで晴らした地点を永続化する（再起動後も保持）。
+    if (_mode == MapMode.map) {
+      MapFogStorageService.saveAll(_mapClearedPoints);
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(
@@ -490,6 +663,7 @@ class _MapScreenState extends State<MapScreen> {
             colorIds: colorIds,
             // 散歩を記録中に撮った写真だけが、領域（色クラスタ）作成の対象になる
             capturedDuringWalk: _isRecording,
+            capturedMode: _mode == MapMode.map ? 'map' : 'collage',
           ),
         );
       });
@@ -499,15 +673,43 @@ class _MapScreenState extends State<MapScreen> {
       final colorLabel = colorIds.isEmpty
           ? '色を検出できませんでした'
           : colorIds.map((id) => colorNames24[id]).join(' / ');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('写真を保存しました　[$colorLabel]')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('写真を保存しました　[$colorLabel]')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('撮影に失敗: $e')));
     }
+  }
+
+  /// 対戦の歴代写真ピンをタップしたときの簡易ビューア（閲覧のみ）。
+  void _showBattlePhotoDialog(PhotoPin pin) {
+    if (pin.imagePath.isEmpty) return;
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(12),
+              ),
+              child: Image.file(File(pin.imagePath)),
+            ),
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text(
+                '対戦モードで撮影した写真',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _openPhotoList() {
@@ -576,8 +778,10 @@ class _MapScreenState extends State<MapScreen> {
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
-          Text(label,
-              style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+          Text(
+            label,
+            style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+          ),
         ],
       );
     }
@@ -593,12 +797,24 @@ class _MapScreenState extends State<MapScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              item(Icons.straighten_rounded, distanceText, '距離',
-                  const Color(0xFF185FA5)),
-              item(Icons.timer_outlined, durationText, '時間',
-                  const Color(0xFF2E7D32)),
-              item(Icons.directions_walk_rounded, '${track.stepCount}歩', '歩数',
-                  const Color(0xFF854F0B)),
+              item(
+                Icons.straighten_rounded,
+                distanceText,
+                '距離',
+                const Color(0xFF185FA5),
+              ),
+              item(
+                Icons.timer_outlined,
+                durationText,
+                '時間',
+                const Color(0xFF2E7D32),
+              ),
+              item(
+                Icons.directions_walk_rounded,
+                '${track.stepCount}歩',
+                '歩数',
+                const Color(0xFF854F0B),
+              ),
             ],
           ),
         ),
@@ -718,9 +934,17 @@ class _MapScreenState extends State<MapScreen> {
                   maxDistanceMeters: _fogMaxDistance,
                   onRegionTap: _openRegionCollage,
                 ),
-              // コラージュモード: 記録中の軌跡を青線で表示
+              // マップモード: 歩いて通った場所だけ晴れる霧
+              // （色クラスタ／領域は作らず、純粋に通過地点の周辺を晴らす）
+              if (_mode == MapMode.map)
+                PathFogOverlay(
+                  clearedPoints: _mapClearedPoints,
+                  clearRadiusMeters: _mapClearRadius,
+                ),
+              // コラージュ／マップモード: 記録中の軌跡を青線で表示
               // （霧オーバーレイより上に重ねることで、霧の中でも常に見えるようにする）
-              if (_mode == MapMode.fog && trackPoints.length >= 2)
+              if ((_mode == MapMode.fog || _mode == MapMode.map) &&
+                  trackPoints.length >= 2)
                 PolylineLayer(
                   polylines: [
                     Polyline(
@@ -731,21 +955,31 @@ class _MapScreenState extends State<MapScreen> {
                   ],
                 ),
               // 写真ピン(全モードで表示)
-              if (_photoPins.isNotEmpty)
+              if (_displayedPins.isNotEmpty)
                 MarkerLayer(
                   markers: [
-                    for (final pin in _photoPins)
+                    for (final pin in _displayedPins)
                       Marker(
                         point: pin.position,
                         width: 56,
                         height: 56,
                         child: GestureDetector(
-                          onTap: () => PhotoDetailSheet.show(
-                            context,
-                            pin,
-                            onDelete: () => _deletePhotoPin(pin),
+                          onTap: () {
+                            // 対戦の歴代写真は閲覧のみ（削除は不可）
+                            if (pin.capturedMode == 'battle') {
+                              _showBattlePhotoDialog(pin);
+                            } else {
+                              PhotoDetailSheet.show(
+                                context,
+                                pin,
+                                onDelete: () => _deletePhotoPin(pin),
+                              );
+                            }
+                          },
+                          child: Opacity(
+                            opacity: pin.capturedMode == 'battle' ? 0.85 : 1.0,
+                            child: PhotoPinMarker(imagePath: pin.imagePath),
                           ),
-                          child: PhotoPinMarker(imagePath: pin.imagePath),
                         ),
                       ),
                   ],
@@ -795,8 +1029,8 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
 
-          // ── 下部:記録コントロール(コラージュタブ時のみ) ──
-          if (_mode == MapMode.fog)
+          // ── 下部:記録コントロール(コラージュ / マップタブ時) ──
+          if (_mode == MapMode.fog || _mode == MapMode.map)
             Positioned(
               left: 76,
               right: 76,
@@ -811,7 +1045,10 @@ class _MapScreenState extends State<MapScreen> {
                     distanceMeters: _distanceMeters,
                     speedKmh: _speedKmh,
                     stepCount: _stepCount,
-                    onStart: _startRecordingFlow,
+                    startLabel: _mode == MapMode.map ? '散歩を開始する' : '散歩を記録する',
+                    onStart: _mode == MapMode.map
+                        ? () async => _startMapWalk()
+                        : _startRecordingFlow,
                     onStop: _stopRecording,
                   ),
                 ),
@@ -875,6 +1112,24 @@ class _MapScreenState extends State<MapScreen> {
               onPressed: _takePhoto,
               heroTag: 'photo_take',
               child: const Icon(Icons.camera_alt),
+            ),
+          if (_mode != MapMode.animation) const SizedBox(height: 8),
+          // フォルダから写真を追加(再生モード中は隠す)
+          if (_mode != MapMode.animation)
+            FloatingActionButton.small(
+              onPressed: _addPhotosFromFolder,
+              heroTag: 'photo_folder',
+              tooltip: 'フォルダから写真を追加',
+              child: const Icon(Icons.add_photo_alternate_outlined),
+            ),
+          if (_mode != MapMode.animation) const SizedBox(height: 8),
+          // 表示する写真の設定(再生モード中は隠す)
+          if (_mode != MapMode.animation)
+            FloatingActionButton.small(
+              onPressed: _openPhotoDisplaySettings,
+              heroTag: 'photo_settings',
+              tooltip: '表示する写真の設定',
+              child: const Icon(Icons.tune),
             ),
           if (_mode != MapMode.animation) const SizedBox(height: 8),
           // 現在地に戻る

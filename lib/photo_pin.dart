@@ -16,6 +16,11 @@ class PhotoPin {
   /// 領域（色クラスタ）を作るアルゴリズムはこれが true のピンのみを対象にする。
   final bool capturedDuringWalk;
 
+  /// 撮影されたモード。'collage' / 'map' のいずれか。
+  /// （対戦モードの写真は別ストレージで管理されるためここには入らない）
+  /// 旧データは 'collage' 扱い。
+  final String capturedMode;
+
   PhotoPin({
     String? id,
     required this.imagePath,
@@ -23,6 +28,7 @@ class PhotoPin {
     required this.takenAt,
     this.colorIds = const [],
     this.capturedDuringWalk = false,
+    this.capturedMode = 'collage',
   }) : id = id ?? '${takenAt.microsecondsSinceEpoch}';
 
   /// JSON 保存: colorIds をインデックスではなく色名（文字列）で保存
@@ -38,6 +44,7 @@ class PhotoPin {
         .map((i) => colorNames24[i])
         .toList(),
     'capturedDuringWalk': capturedDuringWalk,
+    'capturedMode': capturedMode,
   };
 
   factory PhotoPin.fromJson(Map<String, dynamic> json) {
@@ -70,6 +77,8 @@ class PhotoPin {
       colorIds: ids,
       // 旧データ（記録済み: フラグなし）は false 扱い＝領域作成の対象外とする
       capturedDuringWalk: json['capturedDuringWalk'] as bool? ?? false,
+      // 旧データはコラージュモード扱い（デフォルト表示対象）
+      capturedMode: json['capturedMode'] as String? ?? 'collage',
     );
   }
 }

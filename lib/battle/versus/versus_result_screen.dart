@@ -1,10 +1,16 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:permission_handler/permission_handler.dart';
 
+import '../../collage_module.dart';
+import '../../services/battle_photo_history_service.dart';
 import '../../color_extraction.dart';
 import '../current_location_marker.dart';
 import '../models/battle.dart';
@@ -37,6 +43,10 @@ class VersusResultScreen extends StatefulWidget {
 
 class _VersusResultScreenState extends State<VersusResultScreen> {
   final MapController _mapController = MapController();
+
+  /// リザルト表示（面積比バー＋地図）のスクリーンショット用キー
+  final GlobalKey _resultShotKey = GlobalKey();
+  bool _capturing = false;
 
   Battle? _battle;
   String? _myUid;
@@ -174,6 +184,11 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
           ..clear()
           ..addAll(merged);
       });
+      // 自分の対戦写真を歴代履歴へ蓄積（マップ／コラージュでの表示用）。
+      final me = _myUid;
+      if (me != null) {
+        _saveBattleHistory(merged.where((p) => p.ownerUid == me).toList());
+      }
     });
   }
 
@@ -227,6 +242,87 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
     Navigator.of(context, rootNavigator: true).pop();
   }
 
+  /// 自分が対戦中に撮った写真を「歴代の対戦写真」履歴へ蓄積する。
+  /// （マップ／コラージュモードで対戦写真を表示する設定で使われる）
+  void _saveBattleHistory(List<PhotoPin> myPins) {
+    final entries = myPins
+        .where((p) => p.hasImageOnDevice && p.imagePath.isNotEmpty)
+        .map((p) => (
+              id: p.id,
+              imagePath: p.imagePath,
+              lat: p.position.latitude,
+              lng: p.position.longitude,
+              takenAt: p.takenAt,
+            ))
+        .toList();
+    if (entries.isNotEmpty) {
+      BattlePhotoHistoryService.appendEntries(entries);
+    }
+  }
+
+  /// リザルト画面（面積比バー＋地図）をスクリーンショットしてカメラロールへ保存。
+  Future<void> _captureResult() async {
+    if (_capturing) return;
+    setState(() => _capturing = true);
+    try {
+      final status = await Permission.photos.request();
+      if (!status.isGranted && !status.isLimited) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('写真ライブラリへのアクセスを許可してください')),
+          );
+        }
+        return;
+      }
+      final boundary = _resultShotKey.currentContext!.findRenderObject()
+          as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+      final result = await ImageGallerySaver.saveImage(
+        byteData.buffer.asUint8List(),
+        quality: 100,
+        name: 'battle_result_${DateTime.now().millisecondsSinceEpoch}',
+      );
+      if (!mounted) return;
+      final ok = result['isSuccess'] == true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'スクリーンショットを保存しました' : '保存に失敗しました')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('エラー: $e')));
+    } finally {
+      if (mounted) setState(() => _capturing = false);
+    }
+  }
+
+  /// 対戦中に自分が撮った写真を自動でコラージュした画面を開く（保存ボタン付き）。
+  void _openBattleCollage(List<PhotoPin> myPins, int? colorId) {
+    final paths = myPins
+        .where((p) => p.hasImageOnDevice && p.imagePath.isNotEmpty)
+        .map((p) => p.imagePath)
+        .toList();
+    if (paths.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('コラージュにできる写真がありません')),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AutoCollagePage(
+          imagePaths: paths,
+          title: '対戦コラージュ',
+          colorId: colorId ?? 12,
+        ),
+      ),
+    );
+  }
+
   Color _colorFromId(int? id) {
     if (id == null || id < 0 || id >= colorPaletteBattle.length) {
       return Colors.grey;
@@ -259,18 +355,36 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
       appBar: AppBar(
         title: const Text('対戦結果'),
         automaticallyImplyLeading: false,
+        actions: [
+          IconButton(
+            onPressed: _capturing ? null : _captureResult,
+            tooltip: 'スクリーンショットを保存',
+            icon: _capturing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.camera_alt_outlined),
+          ),
+        ],
       ),
       body: Column(
         children: [
-          // 面積比 % バー
-          AreaShareBar(
-            myColor: myColor,
-            opponentColor: oppColor,
-            myPercent: share.myPercent,
-            opponentPercent: share.opponentPercent,
-          ),
           Expanded(
-            child: FlutterMap(
+            child: RepaintBoundary(
+              key: _resultShotKey,
+              child: Column(
+                children: [
+                  // 面積比 % バー
+                  AreaShareBar(
+                    myColor: myColor,
+                    opponentColor: oppColor,
+                    myPercent: share.myPercent,
+                    opponentPercent: share.opponentPercent,
+                  ),
+                  Expanded(
+                    child: FlutterMap(
               mapController: _mapController,
               options: const MapOptions(
                 initialCenter: LatLng(35.1815, 136.9066),
@@ -335,18 +449,38 @@ class _VersusResultScreenState extends State<VersusResultScreen> {
                 ),
               ],
             ),
+                  ),
+                ],
+              ),
+            ),
           ),
           SafeArea(
             top: false,
             child: Padding(
               padding: const EdgeInsets.all(12),
-              child: FilledButton.icon(
-                onPressed: _requestResultClose,
-                icon: const Icon(Icons.stop_circle_outlined),
-                label: const Text('リザルト画面を終了する'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // コラージュを生成（対戦中に自分が撮った写真を自動配置）
+                  OutlinedButton.icon(
+                    onPressed: () =>
+                        _openBattleCollage(myPins, b.myColorId(myUid)),
+                    icon: const Icon(Icons.auto_awesome),
+                    label: const Text('コラージュを生成'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(48),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed: _requestResultClose,
+                    icon: const Icon(Icons.stop_circle_outlined),
+                    label: const Text('リザルト画面を終了する'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(48),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
