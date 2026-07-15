@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -145,6 +146,29 @@ class _ColorCollageScreenState extends State<ColorCollageScreen> {
     setState(() => _completed = collage);
   }
 
+  /// プリクラ風コラージュを完成（確定）させる。合成画像を保存して
+  /// この領域の完成コラージュとして永続化する。
+  Future<void> _finishPurikura(Uint8List pngBytes) async {
+    final dir = await CompletedCollageStorageService.imagesDir();
+    final now = DateTime.now();
+    final path =
+        '${dir.path}/collage_purikura_${now.millisecondsSinceEpoch}.png';
+    await File(path).writeAsBytes(pngBytes);
+
+    final collage = CompletedCollage(
+      colorId: widget.colorId,
+      pinIds: widget.pins.map((p) => p.id).toList(),
+      imagePath: path,
+      createdAt: now,
+    );
+    await CompletedCollageStorageService.save(collage);
+    if (!mounted) return;
+    setState(() => _completed = collage);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('プリクラ風コラージュを完成させました')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -171,6 +195,8 @@ class _ColorCollageScreenState extends State<ColorCollageScreen> {
                             widget.pins.map((p) => p.imagePath).toList(),
                         availablePins: widget.pins,
                         initialColorId: widget.colorId,
+                        // 未完成のときだけ「完成させる」を許可する
+                        onFinish: _completed == null ? _finishPurikura : null,
                       ),
                     ),
                   );
@@ -444,37 +470,30 @@ class _ColorCollageCardState extends State<_ColorCollageCard> {
           ),
         ),
 
-        // ─── レイアウトピッカー（達成後・未完成のみ）───
-        if (_achieved && !_isCompleted) ...[
-          _LayoutPicker(
-            selected: _layoutCount,
-            paletteColor: _paletteColor,
-            onSelect: _changeLayout,
-          ),
-          const SizedBox(height: 8),
-        ],
-
-        // ─── コラージュ本体 ───
+        // ─── コラージュ本体（対戦モードと同じ自動配置コラージュを既定にする）───
         RepaintBoundary(
           key: _repaintKey,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: _isCompleted
                 ? AspectRatio(
-                    aspectRatio: 9 / 16,
+                    aspectRatio: 900 / 1100,
                     child: Image.file(
                       File(widget.completed!.imagePath),
                       fit: BoxFit.cover,
                     ),
                   )
                 : _achieved
-                ? _StoriesCollage(
-                    key: ValueKey(_layoutCount),
-                    slotPins: _slotPhotoIndices
-                        .map((i) => widget.pins[i])
-                        .toList(),
-                    slotPinIndices: List.of(_slotPhotoIndices),
-                    onSlotLongPress: _showPhotoPicker,
+                ? AspectRatio(
+                    aspectRatio: 900 / 1100,
+                    child: FittedBox(
+                      fit: BoxFit.contain,
+                      child: ScrapbookCollage(
+                        imagePaths:
+                            widget.pins.map((p) => p.imagePath).toList(),
+                        colorId: widget.colorId,
+                      ),
+                    ),
                   )
                 : _IncompletePreview(
                     pins: widget.pins,
@@ -516,10 +535,10 @@ class _ColorCollageCardState extends State<_ColorCollageCard> {
           const Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.pinch_outlined, size: 13, color: Colors.white30),
+              Icon(Icons.auto_awesome, size: 13, color: Colors.white30),
               SizedBox(width: 4),
               Text(
-                'ピンチ / ドラッグで調整　ダブルタップでリセット　長押しで写真を変更',
+                '写真は自動で配置されます　右上の「プリクラ風」で自由に編集できます',
                 style: TextStyle(color: Colors.white30, fontSize: 10),
               ),
             ],

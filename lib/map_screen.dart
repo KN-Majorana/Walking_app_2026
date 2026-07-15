@@ -30,7 +30,9 @@ import 'track_picker_sheet.dart';
 import 'track_storage_service.dart';
 import 'walk_track.dart';
 import 'ghost_marker.dart';
+import 'models/completed_collage.dart';
 import 'services/photo_pin_storage_service.dart';
+import 'services/completed_collage_storage_service.dart';
 import 'services/map_fog_storage_service.dart';
 import 'services/photo_display_settings_service.dart';
 import 'services/battle_photo_history_service.dart';
@@ -82,6 +84,9 @@ class _MapScreenState extends State<MapScreen> {
   // 写真ピン(撮影した位置に表示)
   final List<PhotoPin> _photoPins = [];
 
+  // 完成済みコラージュ（完成した領域は地図上に常に表示し続ける）
+  final List<CompletedCollage> _completedCollages = [];
+
   // 霧クリア設定: ピン間の最大距離（メートル）
   double _fogMaxDistance = FogSettingsService.defaultMaxDistance;
 
@@ -108,6 +113,7 @@ class _MapScreenState extends State<MapScreen> {
     _loadFogSettings();
     _loadMapFog();
     _loadPhotoDisplaySettings();
+    _loadCompletedCollages();
     // コラージュ(fog)モードでは起動直後から現在地をリアルタイム更新する。
     _ensureLocationStream();
   }
@@ -217,6 +223,16 @@ class _MapScreenState extends State<MapScreen> {
     setState(() => _fogMaxDistance = dist);
   }
 
+  Future<void> _loadCompletedCollages() async {
+    final list = await CompletedCollageStorageService.loadAll();
+    if (!mounted) return;
+    setState(() {
+      _completedCollages
+        ..clear()
+        ..addAll(list);
+    });
+  }
+
   Future<void> _loadMapFog() async {
     final pts = await MapFogStorageService.loadAll();
     if (!mounted) return;
@@ -322,8 +338,9 @@ class _MapScreenState extends State<MapScreen> {
             position: LatLng(loc.latitude, loc.longitude),
             takenAt: loc.timestamp ?? DateTime.now(),
             colorIds: colorIds,
-            // フォルダ取り込みは領域（色クラスタ）作成の対象外
-            capturedDuringWalk: false,
+            // フォルダから取り込んだ写真も、位置情報があれば
+            // その場で撮った写真と同様に領域（ポリゴン）の頂点にできる。
+            capturedDuringWalk: true,
             capturedMode: _mode == MapMode.map ? 'map' : 'collage',
           ),
         );
@@ -737,13 +754,16 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   // ─── タップした領域(色クラスタ)専用のコラージュ作成画面を開く ───
-  void _openRegionCollage(int colorId, List<PhotoPin> pins) {
-    Navigator.push(
+  Future<void> _openRegionCollage(int colorId, List<PhotoPin> pins) async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ColorCollageScreen(colorId: colorId, pins: pins),
       ),
     );
+    // 完成状態が変わっている可能性があるので再読み込みして
+    // 完成済み領域が地図に反映されるようにする。
+    _loadCompletedCollages();
   }
 
   // ─── 再生モード時の「記録の統計」パネル ───
@@ -877,9 +897,6 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final trackPoints =
-        _currentTrack?.points.map((p) => p.position).toList() ?? [];
-
     // 再生モード時にゴーストが辿っている軌跡の全座標
     final ghostFullPath = _mode == MapMode.animation && _ghost != null
         ? _ghost!.track.points.map((p) => p.position).toList()
@@ -931,6 +948,7 @@ class _MapScreenState extends State<MapScreen> {
               if (_mode == MapMode.fog)
                 FogOverlay(
                   photoPins: _photoPins,
+                  completedCollages: _completedCollages,
                   maxDistanceMeters: _fogMaxDistance,
                   onRegionTap: _openRegionCollage,
                 ),
@@ -941,19 +959,7 @@ class _MapScreenState extends State<MapScreen> {
                   clearedPoints: _mapClearedPoints,
                   clearRadiusMeters: _mapClearRadius,
                 ),
-              // コラージュ／マップモード: 記録中の軌跡を青線で表示
-              // （霧オーバーレイより上に重ねることで、霧の中でも常に見えるようにする）
-              if ((_mode == MapMode.fog || _mode == MapMode.map) &&
-                  trackPoints.length >= 2)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: trackPoints,
-                      strokeWidth: 5,
-                      color: Colors.blue,
-                    ),
-                  ],
-                ),
+              // （コラージュ／マップモードでは、散歩記録中の軌跡は表示しない）
               // 写真ピン(全モードで表示)
               if (_displayedPins.isNotEmpty)
                 MarkerLayer(

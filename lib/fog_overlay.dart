@@ -6,6 +6,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 
 import 'color_extraction.dart';
+import 'fog_texture.dart';
+import 'models/completed_collage.dart';
 import 'photo_pin.dart';
 
 const _deg2rad = 3.141592653589793 / 180;
@@ -22,6 +24,10 @@ class FogOverlay extends StatelessWidget {
   final List<PhotoPin> photoPins;
   final Color fogColor;
 
+  /// 完成済みコラージュ。完成した領域は、ライブのクラスタ条件に関係なく
+  /// 常に地図上に表示し続ける（完成後もポリゴンが消えないようにするため）。
+  final List<CompletedCollage> completedCollages;
+
   /// 同じ色グループとみなすピン間の最大距離（メートル）
   final double maxDistanceMeters;
 
@@ -33,6 +39,7 @@ class FogOverlay extends StatelessWidget {
   const FogOverlay({
     super.key,
     required this.photoPins,
+    this.completedCollages = const [],
     this.fogColor = const Color(0xCC000000),
     this.maxDistanceMeters = 1000.0,
     this.onRegionTap,
@@ -44,6 +51,7 @@ class FogOverlay extends StatelessWidget {
     final painter = _FogPainter(
       camera: camera,
       photoPins: photoPins,
+      completedCollages: completedCollages,
       fogColor: fogColor,
       maxDistanceMeters: maxDistanceMeters,
     );
@@ -71,12 +79,14 @@ class FogOverlay extends StatelessWidget {
 class _FogPainter extends CustomPainter {
   final MapCamera camera;
   final List<PhotoPin> photoPins;
+  final List<CompletedCollage> completedCollages;
   final Color fogColor;
   final double maxDistanceMeters;
 
   const _FogPainter({
     required this.camera,
     required this.photoPins,
+    required this.completedCollages,
     required this.fogColor,
     required this.maxDistanceMeters,
   });
@@ -159,31 +169,69 @@ class _FogPainter extends CustomPainter {
     return result;
   }
 
+  /// 完成済みコラージュの領域を、ライブのクラスタ条件に関係なく取り出す。
+  /// 完成後もその領域（ポリゴン）が地図から消えないようにするため。
+  List<({int colorId, List<PhotoPin> pins})> _completedRegions() {
+    if (completedCollages.isEmpty) return const [];
+    final byId = {for (final p in photoPins) p.id: p};
+    final result = <({int colorId, List<PhotoPin> pins})>[];
+    for (final cc in completedCollages) {
+      final pins = <PhotoPin>[];
+      for (final id in cc.pinIds) {
+        final p = byId[id];
+        if (p != null) pins.add(p);
+      }
+      if (pins.length >= 3) {
+        result.add((colorId: cc.colorId, pins: pins));
+      }
+    }
+    return result;
+  }
+
+  void _paintFogFill(Canvas canvas, Rect bounds) {
+    final tex = FogTexture.image;
+    if (tex != null) {
+      canvas.drawImageRect(
+        tex,
+        Rect.fromLTWH(0, 0, tex.width.toDouble(), tex.height.toDouble()),
+        bounds,
+        Paint()..filterQuality = FilterQuality.medium,
+      );
+    } else {
+      canvas.drawRect(bounds, Paint()..color = fogColor);
+    }
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final bounds = Offset.zero & size;
     final clusters = _buildClusters();
+    final completed = _completedRegions();
+    // ライブのクラスタと完成済み領域の両方の霧を晴らす。
+    final allRegions = [...clusters, ...completed];
 
     // ── 霧レイヤー（saveLayer で合成）──
     canvas.saveLayer(bounds, Paint());
-    canvas.drawRect(bounds, Paint()..color = fogColor);
+    _paintFogFill(canvas, bounds);
 
-    for (final c in clusters) {
+    final clearPaint = Paint()
+      ..blendMode = BlendMode.clear
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true
+      // 雲のフチが柔らかく晴れるようにフェザーをかける
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+
+    for (final c in allRegions) {
       final hull = _hullForPins(c.pins);
       if (hull == null) continue;
-
-      canvas.drawPath(
-        hull,
-        Paint()
-          ..blendMode = BlendMode.clear
-          ..style = PaintingStyle.fill,
-      );
+      canvas.drawPath(hull, clearPaint);
     }
 
     canvas.restore();
 
     // ── 色ティントを描画 ──
-    for (final c in clusters) {
+    for (final c in allRegions) {
+      if (c.colorId < 0 || c.colorId >= colorPalette24.length) continue;
       final hull = _hullForPins(c.pins);
       if (hull == null) continue;
 
@@ -195,14 +243,37 @@ class _FogPainter extends CustomPainter {
           ..style = PaintingStyle.fill,
       );
     }
+
+    // ── 完成済み領域は輪郭を描いて「完成した領域」を明示 ──
+    for (final c in completed) {
+      if (c.colorId < 0 || c.colorId >= colorPalette24.length) continue;
+      final hull = _hullForPins(c.pins);
+      if (hull == null) continue;
+
+      final pc = colorPalette24[c.colorId];
+      canvas.drawPath(
+        hull,
+        Paint()
+          ..color = Color.fromRGBO(pc.r, pc.g, pc.b, 0.9)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..isAntiAlias = true,
+      );
+    }
   }
 
   /// [point]（ウィジェット座標）が、いずれかの色クラスタの凸包領域内に
   /// あればそのクラスタ（colorId とそれを構成するピン一覧）を返す。
   /// どの領域にも含まれなければ null。
   ({int colorId, List<PhotoPin> pins})? clusterAtPoint(Offset point) {
-    final clusters = _buildClusters();
-    for (final c in clusters) {
+    // 完成済み領域を優先（タップで完成コラージュを開けるように）。
+    for (final c in _completedRegions()) {
+      final hull = _hullForPins(c.pins);
+      if (hull != null && hull.contains(point)) {
+        return c;
+      }
+    }
+    for (final c in _buildClusters()) {
       final hull = _hullForPins(c.pins);
       if (hull != null && hull.contains(point)) {
         return c;
@@ -265,5 +336,6 @@ class _FogPainter extends CustomPainter {
       old.camera.nonRotatedSize != camera.nonRotatedSize ||
       old.fogColor != fogColor ||
       old.maxDistanceMeters != maxDistanceMeters ||
+      !listEquals(old.completedCollages, completedCollages) ||
       !listEquals(old.photoPins, photoPins);
 }

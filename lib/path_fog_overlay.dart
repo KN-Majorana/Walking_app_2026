@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 
+import 'fog_texture.dart';
+
 const _deg2rad = 3.141592653589793 / 180;
 
 /// 「マップ」モード用の霧オーバーレイ。
@@ -65,12 +67,24 @@ class _PathFogPainter extends CustomPainter {
 
     // 霧レイヤー（saveLayer で合成し、円を clear で抜く）
     canvas.saveLayer(bounds, Paint());
-    canvas.drawRect(bounds, Paint()..color = fogColor);
+    final tex = FogTexture.image;
+    if (tex != null) {
+      canvas.drawImageRect(
+        tex,
+        Rect.fromLTWH(0, 0, tex.width.toDouble(), tex.height.toDouble()),
+        bounds,
+        Paint()..filterQuality = FilterQuality.medium,
+      );
+    } else {
+      canvas.drawRect(bounds, Paint()..color = fogColor);
+    }
 
     final clearPaint = Paint()
       ..blendMode = BlendMode.clear
       ..style = PaintingStyle.fill
-      ..isAntiAlias = true;
+      ..isAntiAlias = true
+      // 雲のフチが柔らかく晴れるようにフェザーをかける
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
 
     for (final p in clearedPoints) {
       final screen = camera.latLngToScreenPoint(p);

@@ -804,11 +804,16 @@ class EditableCollagePage extends StatefulWidget {
   final List<PhotoPin> availablePins;
   final int? initialColorId;
 
+  /// 「完成させる」時に、合成画像（PNG バイト列）を受け取って
+  /// 保存・確定処理を行うコールバック。null の場合は「完成」ボタンを出さない。
+  final Future<void> Function(Uint8List pngBytes)? onFinish;
+
   const EditableCollagePage({
     super.key,
     required this.imagePaths,
     this.availablePins = const [],
     this.initialColorId,
+    this.onFinish,
   });
 
   @override
@@ -2949,12 +2954,71 @@ class _EditableCollagePageState extends State<EditableCollagePage> {
     );
   }
 
+  /// プリクラ風コラージュを「完成（確定）」させる。
+  /// 現在の合成画像を PNG 化して onFinish に渡し、確定後に画面を閉じる。
+  Future<void> finishCollage() async {
+    final onFinish = widget.onFinish;
+    if (onFinish == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('コラージュを完成させますか？'),
+        content: const Text('完成すると、このコラージュはもう編集できなくなります。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('完成させる'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() {
+      selectedIndex = -1;
+      isSaving = true;
+    });
+    // 選択枠が消えた状態で再描画されるのを待つ
+    await Future.delayed(const Duration(milliseconds: 80));
+
+    try {
+      final boundary =
+          captureKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
+      if (boundary == null) return;
+      final image = await boundary.toImage(pixelRatio: 2.5);
+      final byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+      await onFinish(byteData.buffer.asUint8List());
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('完成に失敗しました: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => isSaving = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('プリクラ風コラージュ'),
         actions: [
+          if (widget.onFinish != null)
+            TextButton.icon(
+              onPressed: finishCollage,
+              icon: const Icon(Icons.check_circle_outline),
+              label: const Text('完成'),
+            ),
           IconButton(
             onPressed: saveCollageWithoutSelection,
             icon: const Icon(Icons.save_alt),
