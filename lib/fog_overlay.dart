@@ -40,7 +40,7 @@ class FogOverlay extends StatelessWidget {
     super.key,
     required this.photoPins,
     this.completedCollages = const [],
-    this.fogColor = const Color(0xCC000000),
+    this.fogColor = const Color(0xFFF4F6F9),
     this.maxDistanceMeters = 1000.0,
     this.onRegionTap,
   });
@@ -214,12 +214,11 @@ class _FogPainter extends CustomPainter {
     canvas.saveLayer(bounds, Paint());
     _paintFogFill(canvas, bounds);
 
+    // 晴れている場所は完全に透過させる（にじみ/白いフチを出さない）。
     final clearPaint = Paint()
       ..blendMode = BlendMode.clear
       ..style = PaintingStyle.fill
-      ..isAntiAlias = true
-      // 雲のフチが柔らかく晴れるようにフェザーをかける
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+      ..isAntiAlias = true;
 
     for (final c in allRegions) {
       final hull = _hullForPins(c.pins);

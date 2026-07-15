@@ -22,7 +22,7 @@ class PathFogOverlay extends StatelessWidget {
   const PathFogOverlay({
     super.key,
     required this.clearedPoints,
-    this.fogColor = const Color(0xCC000000),
+    this.fogColor = const Color(0xFFF4F6F9),
     this.clearRadiusMeters = 40.0,
   });
 
@@ -79,12 +79,11 @@ class _PathFogPainter extends CustomPainter {
       canvas.drawRect(bounds, Paint()..color = fogColor);
     }
 
+    // 晴れている場所は完全に透過させる（にじみ/白いフチを出さない）。
     final clearPaint = Paint()
       ..blendMode = BlendMode.clear
       ..style = PaintingStyle.fill
-      ..isAntiAlias = true
-      // 雲のフチが柔らかく晴れるようにフェザーをかける
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+      ..isAntiAlias = true;
 
     for (final p in clearedPoints) {
       final screen = camera.latLngToScreenPoint(p);

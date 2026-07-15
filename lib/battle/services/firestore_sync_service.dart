@@ -541,13 +541,20 @@ class FirestoreSyncService {
     } catch (_) {}
   }
 
-  /// 対戦終了時（cleared / 対戦ドキュメント消滅）に、端末に残る対戦データを
-  /// すべて消去する。
-  ///   * 写真の実ファイル（battles/{battleId}/photos/ ディレクトリ）
-  ///   * 写真ピンのローカルミラー（photo_pins.json：座標・色などのメタ）
-  /// 対戦モードは同時に1件しか成立しないため、ミラーは全消去でよい。
+  /// 対戦終了時（cleared / 対戦ドキュメント消滅）に、対戦の「作業用」ローカル
+  /// データを次の対戦へ持ち越さないようにリセットする。
+  ///
+  /// 重要な仕様変更:
+  ///   * 写真の実ファイル（battles/{battleId}/photos/）は **削除しない**。
+  ///     マップモードで「歴代の対戦の軌跡・写真から霧を晴らす」ために残す。
+  ///   * 写真ピンのローカルミラー（photo_pins.json：座標などのメタ）だけを
+  ///     クリアして、次の対戦に前回のピンが混ざらないようにする。
+  ///     （ミラーは対戦中の一時キャッシュに過ぎず、歴代データは
+  ///      BattlePhotoHistoryService 側に別途保存されている）
+  ///
+  /// これにより「過去の対戦のピン・座標・軌跡が以降の対戦に反映される」ことは
+  /// 無く（対戦は battleId で厳密にスコープされる）、かつ歴代データは失われない。
   static Future<void> purgeBattleLocalAll(String battleId) async {
-    await purgeBattleLocal(battleId);
     try {
       await PhotoPinStorageService.clearAll();
     } catch (_) {}

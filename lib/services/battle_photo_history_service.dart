@@ -17,10 +17,16 @@ class BattlePhotoHistoryService {
   BattlePhotoHistoryService._();
 
   static const _fileName = 'battle_photo_history.json';
+  static const _trajectoryFileName = 'battle_trajectory_history.json';
 
   static Future<File> _file() async {
     final dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/$_fileName');
+  }
+
+  static Future<File> _trajectoryFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/$_trajectoryFileName');
   }
 
   /// 歴代の対戦写真をすべて読み込む（capturedMode = 'battle'）。
@@ -88,10 +94,67 @@ class BattlePhotoHistoryService {
     } catch (_) {}
   }
 
+  // ─────────────────────────────────────────
+  // 対戦中の移動軌跡（位置情報の軌跡）
+  // ─────────────────────────────────────────
+
+  /// 歴代の対戦中の移動軌跡（座標列）を読み込む。
+  static Future<List<LatLng>> loadTrajectory() async {
+    try {
+      final file = await _trajectoryFile();
+      if (!await file.exists()) return [];
+      final text = await file.readAsString();
+      if (text.isEmpty) return [];
+      final list = jsonDecode(text) as List<dynamic>;
+      return list
+          .map((j) => LatLng(
+                (j['lat'] as num).toDouble(),
+                (j['lng'] as num).toDouble(),
+              ))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// 対戦中の移動軌跡を追記する。近すぎる点は間引く（約8m）。
+  static Future<void> appendTrajectory(List<LatLng> points) async {
+    if (points.isEmpty) return;
+    try {
+      final existing = await loadTrajectory();
+      final merged = <LatLng>[...existing];
+      const distance = Distance(roundResult: false);
+      for (final p in points) {
+        if (merged.isEmpty || distance(merged.last, p) > 8) {
+          merged.add(p);
+        }
+      }
+      final file = await _trajectoryFile();
+      await file.writeAsString(
+        jsonEncode(
+          merged.map((p) => {'lat': p.latitude, 'lng': p.longitude}).toList(),
+        ),
+      );
+    } catch (_) {}
+  }
+
+  /// マップモードの霧晴らしに使う「歴代の対戦の通過点」。
+  /// 対戦中の移動軌跡 ＋ 対戦写真の撮影位置をまとめて返す。
+  static Future<List<LatLng>> loadFogPoints() async {
+    final trajectory = await loadTrajectory();
+    final photos = await loadAll();
+    return [
+      ...trajectory,
+      for (final p in photos) p.position,
+    ];
+  }
+
   static Future<void> clearAll() async {
     try {
       final file = await _file();
       if (await file.exists()) await file.delete();
+      final tfile = await _trajectoryFile();
+      if (await tfile.exists()) await tfile.delete();
     } catch (_) {}
   }
 

@@ -41,18 +41,18 @@ class FogTexture {
     final rect = ui.Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble());
     final canvas = ui.Canvas(recorder, rect);
 
-    // ベース: うっすら青みがかった明るいグレー（霧のベース色）
-    canvas.drawRect(rect, ui.Paint()..color = const ui.Color(0xE6C9CDD3));
+    // ベース: ほぼ白い不透明の雲。霧が晴れていない場所は白く見える。
+    canvas.drawRect(rect, ui.Paint()..color = const ui.Color(0xFFF4F6F9));
 
     final rnd = Random(7);
-    // 明るい雲と少し暗い雲を多数重ねて、もこもこした質感を作る。
+    // 白と、ごく淡いグレーの陰影を重ねて、もこもこした雲の質感を作る。
     for (int i = 0; i < 520; i++) {
       final x = rnd.nextDouble() * size;
       final y = rnd.nextDouble() * size;
       final r = size * (0.03 + rnd.nextDouble() * 0.15);
-      final bright = rnd.nextDouble() < 0.6;
-      final v = bright ? 230 + rnd.nextInt(25) : 150 + rnd.nextInt(45);
-      final a = 0.04 + rnd.nextDouble() * 0.16;
+      final bright = rnd.nextDouble() < 0.7;
+      final v = bright ? 255 : 214 + rnd.nextInt(24);
+      final a = 0.05 + rnd.nextDouble() * 0.18;
       canvas.drawCircle(
         ui.Offset(x, y),
         r,

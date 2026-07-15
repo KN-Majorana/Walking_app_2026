@@ -26,6 +26,7 @@ import '../opponent_location_marker.dart';
 import '../photo_pin.dart';
 import '../photo_pin_marker.dart';
 import '../polygon_create_flow.dart';
+import '../../services/battle_photo_history_service.dart';
 import '../services/battle_service.dart';
 import '../services/firebase_auth_service.dart';
 import '../services/firestore_sync_service.dart';
@@ -77,6 +78,10 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   StreamSubscription<List<WalkPolygon>>? _polygonSub;
   StreamSubscription<List<PhotoPin>>? _photoSub;
   StreamSubscription<LatLng>? _posSub;
+
+  // 対戦中の移動軌跡（歴代データとして保存し、マップモードの霧晴らしに使う）
+  final List<LatLng> _myTrail = [];
+  int _trailFlushed = 0;
   Timer? _tick;
 
   /// 位置情報を Firestore へ上げる周期タイマー（既定 30 秒）。
@@ -100,6 +105,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   @override
   void dispose() {
+    _flushTrail();
     _battleSub?.cancel();
     _polygonSub?.cancel();
     _photoSub?.cancel();
@@ -107,6 +113,34 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     _tick?.cancel();
     _locUploadTimer?.cancel();
     super.dispose();
+  }
+
+  /// まだ保存していない移動軌跡を歴代データへ追記する。
+  void _flushTrail() {
+    if (_trailFlushed >= _myTrail.length) return;
+    final newPoints = _myTrail.sublist(_trailFlushed);
+    _trailFlushed = _myTrail.length;
+    BattlePhotoHistoryService.appendTrajectory(newPoints);
+  }
+
+  /// 自分が対戦中に撮った写真を歴代データへ蓄積する（マップの霧晴らし用）。
+  void _archiveMyPhotos(List<PhotoPin> pins) {
+    final me = _myUid;
+    if (me == null) return;
+    final entries = pins
+        .where((p) =>
+            p.ownerUid == me && p.hasImageOnDevice && p.imagePath.isNotEmpty)
+        .map((p) => (
+              id: p.id,
+              imagePath: p.imagePath,
+              lat: p.position.latitude,
+              lng: p.position.longitude,
+              takenAt: p.takenAt,
+            ))
+        .toList();
+    if (entries.isNotEmpty) {
+      BattlePhotoHistoryService.appendEntries(entries);
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -131,6 +165,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         _currentPosition = pos;
         _hasLocation = true;
       });
+      // 対戦中の移動軌跡を蓄積（歴代データ用）。
+      _myTrail.add(pos);
       if (!_centeredOnce) {
         _mapController.move(_currentPosition, 15.0);
         _centeredOnce = true;
@@ -140,6 +176,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     // ── 位置情報を一定間隔で Firestore へアップロード ──
     _locUploadTimer = Timer.periodic(_locUploadInterval, (_) {
       _uploadMyLocation();
+      _flushTrail();
     });
 
     // battle
@@ -196,6 +233,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
           ..addAll(merged);
       });
       _saveLocalMirror();
+      // 自分の写真を歴代データへ蓄積（マップモードの霧晴らし用）。
+      _archiveMyPhotos(merged);
     });
 
     // 1 秒タイマー（残り時間 & endsAt 到達判定）
