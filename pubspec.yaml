@@ -36,6 +36,9 @@ dependencies:
 
   # 加速度センサーによる歩数計測（walk_record の歩数計機能）
   sensors_plus: ^6.1.0
+
+  # 磁気コンパス（現在地マーカーの向き・地図右上のコンパス）
+  flutter_compass: ^0.8.1
   image_picker: ^1.2.2
   path_provider: ^2.1.5
   path: ^1.9.1

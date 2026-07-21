@@ -8,6 +8,8 @@ import 'package:latlong2/latlong.dart';
 
 import 'battle_overlay.dart';
 import 'collage_gallery_screen.dart';
+import 'compass_service.dart';
+import 'map_compass.dart';
 import 'color_extraction.dart';
 import 'crossed_swords_icon.dart';
 import 'current_location_marker.dart';
@@ -105,6 +107,13 @@ class _MapScreenState extends State<MapScreen> {
   /// 初期値は既定ズーム相当（build 前に参照されても破綻しないように）。
   double _currentZoom = 15.0;
 
+  /// 地図の回転角（度）。コンパスの針と現在地ビームの向きに使う。
+  double _mapRotation = 0;
+
+  /// 端末が向いている方位（度・真北が 0）。null は向き不明。
+  double? _heading;
+  StreamSubscription<double?>? _headingSub;
+
   /// 画面の端から端までが約 1.5km になるズームレベル。
   double get _defaultZoom => MapZoom.forSpan(
     widthPx: _viewWidthPx,
@@ -112,12 +121,9 @@ class _MapScreenState extends State<MapScreen> {
     spanMeters: kDefaultMapSpanMeters,
   );
 
-  /// 写真の場所へ飛ぶときのズーム（画面の端から端まで約 500m）。
-  double get _closeUpZoom => MapZoom.forSpan(
-    widthPx: _viewWidthPx,
-    latitude: _currentPosition.latitude,
-    spanMeters: 500,
-  );
+  /// 写真の場所へ飛ぶときのズーム。既定の縮尺と揃えてあるので、
+  /// 縮尺は変わらず位置だけが動いたように見える。
+  double get _closeUpZoom => _defaultZoom;
 
   // 歴代の対戦で通った点（軌跡＋写真位置）。
   // ON/OFF 設定は廃止し、常に霧晴らしへ反映する。
@@ -136,10 +142,16 @@ class _MapScreenState extends State<MapScreen> {
     _loadBattlePinSetting();
     // マップモードでは起動直後から現在地をリアルタイム更新する。
     _ensureLocationStream();
+    // 端末の向き（磁気コンパス）。センサーが無い端末では何も流れない。
+    _headingSub = CompassService.heading().listen((h) {
+      if (!mounted || h == null) return;
+      setState(() => _heading = h);
+    });
   }
 
   @override
   void dispose() {
+    _headingSub?.cancel();
     _positionSub?.cancel();
     _elapsedTimer?.cancel();
     _ghostTimer?.cancel();
@@ -689,6 +701,18 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  /// 現在地ボタン。位置・縮尺に加えて、地図の回転も北向きへ戻す。
+  void _backToCurrentLocation() {
+    _mapController.moveAndRotate(_currentPosition, _defaultZoom, 0);
+    setState(() => _mapRotation = 0);
+  }
+
+  /// コンパスのタップ。向きだけ北へ戻す（位置と縮尺はそのまま）。
+  void _resetRotation() {
+    _mapController.rotate(0);
+    setState(() => _mapRotation = 0);
+  }
+
   /// 写真一覧の「この場所に移動」から呼ばれる。
   /// 一覧を閉じ、マップモードに戻してから、その写真の座標へ地図を動かす。
   void _moveToPin(PhotoPin pin) {
@@ -896,8 +920,15 @@ class _MapScreenState extends State<MapScreen> {
               // ズームが変わったら写真ピンの表示数・大きさを見直す。
               // 微小な変化では再描画しない（0.05 未満は無視）。
               onPositionChanged: (camera, hasGesture) {
-                if ((camera.zoom - _currentZoom).abs() < 0.05) return;
-                setState(() => _currentZoom = camera.zoom);
+                final zoomChanged =
+                    (camera.zoom - _currentZoom).abs() >= 0.05;
+                final rotationChanged =
+                    (camera.rotation - _mapRotation).abs() >= 0.5;
+                if (!zoomChanged && !rotationChanged) return;
+                setState(() {
+                  _currentZoom = camera.zoom;
+                  _mapRotation = camera.rotation;
+                });
               },
             ),
             children: [
@@ -956,9 +987,19 @@ class _MapScreenState extends State<MapScreen> {
                   markers: [
                     Marker(
                       point: _currentPosition,
-                      width: 13,
-                      height: 13,
-                      child: const CurrentLocationMarker(),
+                      // ビームが丸からはみ出すぶん、マーカーを大きめに取る。
+                      width: 46,
+                      height: 46,
+                      child: Center(
+                        child: SizedBox(
+                          width: 13,
+                          height: 13,
+                          child: CurrentLocationMarker(
+                            headingDegrees: _heading,
+                            mapRotationDegrees: _mapRotation,
+                          ),
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -998,6 +1039,22 @@ class _MapScreenState extends State<MapScreen> {
                     currentMode: _mode,
                     onModeChanged: _onModeChanged,
                   ),
+                ),
+              ),
+            ),
+          ),
+
+          // ── 右上:コンパス（タップで北向きに戻す）──
+          //   モード切替バーの下に来るよう、上部に余白を取る。
+          Positioned(
+            top: 0,
+            right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.only(top: 72, right: 12),
+                child: MapCompass(
+                  rotationDegrees: _mapRotation,
+                  onTap: _resetRotation,
                 ),
               ),
             ),
@@ -1104,7 +1161,7 @@ class _MapScreenState extends State<MapScreen> {
           // 現在地に戻る
           FloatingActionButton.small(
             onPressed: _hasLocation
-                ? () => _mapController.move(_currentPosition, _defaultZoom)
+                ? _backToCurrentLocation
                 : null,
             heroTag: 'recenter',
             child: const Icon(Icons.my_location),

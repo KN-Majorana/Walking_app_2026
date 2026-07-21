@@ -47,8 +47,8 @@ class MapZoom {
   static double _log2(double x) => math.log(x) / math.ln2;
 }
 
-/// アプリ全体で使う既定の表示範囲（画面の端から端まで＝約 1.5km）。
+/// アプリ全体で使う既定の表示範囲（画面の端から端まで＝約 300m）。
 ///
 /// 初期表示・「現在地に戻る」ボタン・対戦画面の地図がすべてこの値を使う。
 /// 縮尺を変えたいときはここだけ直せばよい。
-const double kDefaultMapSpanMeters = 1500;
+const double kDefaultMapSpanMeters = 300;
