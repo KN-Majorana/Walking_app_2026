@@ -12,10 +12,16 @@ class PhotoListScreen extends StatefulWidget {
   /// 引数は削除対象の pin.id のセット。
   final void Function(Set<String> ids)? onDeletePins;
 
+  /// 「この場所に移動」で呼ばれるコールバック。
+  /// null のときはボタンを出さない（地図の無いフォトモードから開いた場合）。
+  /// 呼び出し側で一覧を閉じ、地図をその座標へ動かす。
+  final void Function(PhotoPin pin)? onMoveToPin;
+
   const PhotoListScreen({
     super.key,
     required this.photoPins,
     this.onDeletePins,
+    this.onMoveToPin,
   });
 
   @override
@@ -111,24 +117,39 @@ class _PhotoListScreenState extends State<PhotoListScreen> {
                 child: Image.file(File(pin.imagePath)),
               ),
             ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(dctx);
-                    _deleteSingle(pin);
-                  },
-                  style: TextButton.styleFrom(foregroundColor: Colors.red),
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('削除'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(dctx),
-                  child: const Text('閉じる'),
-                ),
-                const SizedBox(width: 8),
-              ],
+            // ボタンが3つ並ぶと幅の狭い端末で溢れるため、はみ出す場合は
+            // 折り返す（Wrap）。
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(dctx);
+                      _deleteSingle(pin);
+                    },
+                    style: TextButton.styleFrom(foregroundColor: Colors.red),
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('削除'),
+                  ),
+                  // 地図のある画面から開いたときだけ表示する
+                  if (widget.onMoveToPin != null)
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.pop(dctx); // 拡大表示を閉じる
+                        widget.onMoveToPin!(pin); // 一覧を閉じて地図を動かす
+                      },
+                      icon: const Icon(Icons.my_location),
+                      label: const Text('この場所に移動'),
+                    ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(dctx),
+                    child: const Text('閉じる'),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

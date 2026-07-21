@@ -7,6 +7,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 
 import 'fog_texture.dart';
+import 'fog_tiling.dart';
 
 const _deg2rad = 3.141592653589793 / 180;
 
@@ -80,34 +81,22 @@ class _PathFogPainter extends CustomPainter {
   /// 雲テクスチャを地図に貼り付けて描く。
   ///
   /// 雲 1 枚を実距離 [FogTexture.tileMeters] 四方として扱い、
-  /// 地図上の固定点（赤道・本初子午線）を基準にタイルを並べる。
-  /// これにより、拡大縮小でも移動でも雲が地図に貼り付いたまま動く。
+  /// 画面中心の近くにある格子点を基準にタイルを並べる（[FogTiling] を参照）。
+  /// これにより、拡大縮小でも移動でも雲が地図に貼り付いたまま滑らかに動く。
   void _paintFogTexture(Canvas canvas, Rect bounds) {
-    final mpp = _metersPerPixel(camera.center.latitude);
-    if (mpp <= 0) {
-      canvas.drawRect(bounds, Paint()..color = fogColor);
-      return;
-    }
-
-    final tileSizePx = FogTexture.tileMeters / mpp;
-
-    // 基準点（0,0）の画面座標を求め、そこからタイルの位置を決める。
-    final origin = camera.latLngToScreenPoint(const LatLng(0, 0));
-
-    // 鏡張りは 2 枚で 1 周期。周期で剰余を取り、シェーダへ渡す値を
-    // 小さく保つ（GPU は float32 精度なので大きい座標だとズレる）。
-    final period = tileSizePx * 2;
-    double wrap(double v) {
-      final m = v % period;
-      return m.isNaN ? 0 : m;
-    }
+    final placement = FogTiling.compute(
+      zoom: camera.zoom,
+      center: camera.center,
+      size: bounds.size,
+      tileMeters: FogTexture.tileMeters,
+    );
 
     FogTexture.paintWorldTiles(
       canvas,
       bounds,
-      tileSizePx: tileSizePx,
-      offsetX: wrap(origin.x),
-      offsetY: wrap(origin.y),
+      tileSizePx: placement.tileSizePx,
+      offsetX: placement.offsetX,
+      offsetY: placement.offsetY,
       fallbackColor: fogColor,
     );
   }

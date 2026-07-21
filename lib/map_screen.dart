@@ -111,6 +111,13 @@ class _MapScreenState extends State<MapScreen> {
         spanMeters: kDefaultMapSpanMeters,
       );
 
+  /// 写真の場所へ飛ぶときのズーム（画面の端から端まで約 500m）。
+  double get _closeUpZoom => MapZoom.forSpan(
+        widthPx: _viewWidthPx,
+        latitude: _currentPosition.latitude,
+        spanMeters: 500,
+      );
+
   // 歴代の対戦で通った点（軌跡＋写真位置）。
   // ON/OFF 設定は廃止し、常に霧晴らしへ反映する。
   final List<LatLng> _battleFogPoints = [];
@@ -686,6 +693,21 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  /// 写真一覧の「この場所に移動」から呼ばれる。
+  /// 一覧を閉じ、マップモードに戻してから、その写真の座標へ地図を動かす。
+  void _moveToPin(PhotoPin pin) {
+    Navigator.of(context).pop(); // 写真一覧を閉じる
+    setState(() {
+      if (_mode != MapMode.map) _mode = MapMode.map;
+    });
+    _ensureLocationStream();
+    // 画面が地図に切り替わってから動かす（切替前だと MapController が未接続）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(pin.position, _closeUpZoom);
+    });
+  }
+
   void _openPhotoList() {
     Navigator.push(
       context,
@@ -694,6 +716,7 @@ class _MapScreenState extends State<MapScreen> {
           // 対戦中に撮った写真も一覧に含める（対戦終了後も残る）。
           photoPins: _allPhotoPinsForList,
           onDeletePins: _deletePinsFromList,
+          onMoveToPin: _moveToPin,
         ),
       ),
     );

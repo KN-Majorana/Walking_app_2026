@@ -1,4 +1,4 @@
-import 'dart:math' show Point, sin, cos, sqrt, atan2, pow;
+import 'dart:math' show Point, sin, cos, sqrt, atan2;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart' hide Path;
 
 import 'color_extraction.dart';
 import 'fog_texture.dart';
+import 'fog_tiling.dart';
 import 'models/completed_collage.dart';
 import 'photo_pin.dart';
 
@@ -192,29 +193,19 @@ class _FogPainter extends CustomPainter {
   /// 雲 1 枚を実距離 [FogTexture.tileMeters] 四方として扱い、
   /// 地図上の固定点を基準に鏡張りで並べるので、拡大縮小・移動に追従する。
   void _paintFogFill(Canvas canvas, Rect bounds) {
-    final mpp = 156543.03392 *
-        cos(camera.center.latitude * 3.141592653589793 / 180) /
-        pow(2, camera.zoom);
-    if (mpp <= 0) {
-      canvas.drawRect(bounds, Paint()..color = fogColor);
-      return;
-    }
-
-    final tileSizePx = FogTexture.tileMeters / mpp;
-    final origin = camera.latLngToScreenPoint(const LatLng(0, 0));
-    final period = tileSizePx * 2; // 鏡張りは 2 枚で 1 周期
-
-    double wrap(double v) {
-      final m = v % period;
-      return m.isNaN ? 0 : m;
-    }
+    final placement = FogTiling.compute(
+      zoom: camera.zoom,
+      center: camera.center,
+      size: bounds.size,
+      tileMeters: FogTexture.tileMeters,
+    );
 
     FogTexture.paintWorldTiles(
       canvas,
       bounds,
-      tileSizePx: tileSizePx,
-      offsetX: wrap(origin.x),
-      offsetY: wrap(origin.y),
+      tileSizePx: placement.tileSizePx,
+      offsetX: placement.offsetX,
+      offsetY: placement.offsetY,
       fallbackColor: fogColor,
     );
   }

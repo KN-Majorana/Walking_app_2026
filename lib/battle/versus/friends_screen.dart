@@ -182,14 +182,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (_, i) {
                     final f = list[i];
-                    // 右スワイプでも削除できる（確認ダイアログを挟む）。
+                    // 左スワイプでも削除できる（確認ダイアログを挟む）。
                     return Dismissible(
                       key: ValueKey(f.uid),
-                      direction: DismissDirection.startToEnd,
+                      direction: DismissDirection.endToStart,
                       confirmDismiss: (_) => _confirmAndRemove(f),
                       background: Container(
                         color: Colors.red,
-                        alignment: Alignment.centerLeft,
+                        alignment: Alignment.centerRight,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         child: const Icon(Icons.delete_outline,
                             color: Colors.white),
