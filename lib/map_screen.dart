@@ -14,6 +14,7 @@ import 'path_fog_overlay.dart';
 import 'ghost_track.dart';
 import 'location_service.dart';
 import 'map_mode.dart';
+import 'map_zoom.dart';
 import 'mode_switcher.dart';
 import 'photo_collage_screen.dart';
 import 'photo_detail_sheet.dart';
@@ -79,9 +80,12 @@ class _MapScreenState extends State<MapScreen> {
   final List<PhotoPin> _photoPins = [];
 
   // 歴代の対戦で撮った自分の写真（capturedMode = 'battle'）。
-  // 地図上にはピン表示しない（従来通り霧晴らし用）が、「撮影した写真」一覧には
-  // 表示する。対戦が終わってもここに残るので、対戦の写真が一覧から消えない。
+  // 「撮影した写真」一覧には常に表示し、地図上のピン表示は
+  // _showBattlePhotoPins で切り替える。
   final List<PhotoPin> _battlePhotoPins = [];
+
+  // 対戦写真をマップモードの地図にピン表示するか（永続化される）
+  bool _showBattlePhotoPins = true;
 
   // ── マップモード ──
   // これまで歩いて霧を晴らした地点（再起動後も保持）
@@ -89,10 +93,19 @@ class _MapScreenState extends State<MapScreen> {
   // マップモードで霧を晴らす半径（メートル）
   static const double _mapClearRadius = 30.0;
 
-  // ── マップモードの霧晴らし設定（マップモード限定）──
-  // 歴代の対戦の軌跡・写真からも霧を晴らすか
-  bool _useBattleFog = true;
-  // 歴代の対戦で通った点（軌跡＋写真位置）。設定 ON のときだけ読み込む。
+  /// 直近の build 時の画面幅（論理ピクセル）。既定ズームの計算に使う。
+  /// build より前に地図を動かす経路があるため、初期値を持たせておく。
+  double _viewWidthPx = 400;
+
+  /// 画面の端から端までが約 3km になるズームレベル。
+  double get _defaultZoom => MapZoom.forSpan(
+        widthPx: _viewWidthPx,
+        latitude: _currentPosition.latitude,
+        spanMeters: kDefaultMapSpanMeters,
+      );
+
+  // 歴代の対戦で通った点（軌跡＋写真位置）。
+  // ON/OFF 設定は廃止し、常に霧晴らしへ反映する。
   final List<LatLng> _battleFogPoints = [];
 
   bool get _isRecording => _currentTrack != null && _currentTrack!.isActive;
@@ -104,7 +117,8 @@ class _MapScreenState extends State<MapScreen> {
     _loadSavedTracks();
     _loadPhotoPins();
     _loadMapFog();
-    _loadBattleFogSettings();
+    _loadBattleFogPoints();
+    _loadBattlePinSetting();
     // マップモードでは起動直後から現在地をリアルタイム更新する。
     _ensureLocationStream();
   }
@@ -169,7 +183,7 @@ class _MapScreenState extends State<MapScreen> {
         _currentPosition = pos;
         _hasLocation = true;
       });
-      _mapController.move(_currentPosition, 15.0);
+      _mapController.move(_currentPosition, _defaultZoom);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -224,8 +238,74 @@ class _MapScreenState extends State<MapScreen> {
           ..clear()
           ..addAll(alive);
       });
+      await _ensureBattlePhotoColors();
     } catch (_) {}
   }
+
+  /// 対戦写真に 24 色パレットの主要色を持たせる。
+  ///
+  /// 対戦モードは専用パレットで色判定するため、フォトモードの色グループには
+  /// そのままでは載らない。色が未設定のものだけ抽出し、履歴へ書き戻して
+  /// 次回以降は再計算しないようにする。
+  Future<void> _ensureBattlePhotoColors() async {
+    final targets =
+        _battlePhotoPins.where((p) => p.colorIds.isEmpty).toList();
+    if (targets.isEmpty) return;
+
+    final computed = <String, List<int>>{};
+    for (final pin in targets) {
+      try {
+        final ids = await extractColorIdsFromPath(pin.imagePath);
+        if (ids.isNotEmpty) computed[pin.id] = ids;
+      } catch (_) {}
+    }
+    if (computed.isEmpty) return;
+
+    await BattlePhotoHistoryService.saveColorIds(computed);
+    if (!mounted) return;
+    setState(() {
+      for (var i = 0; i < _battlePhotoPins.length; i++) {
+        final ids = computed[_battlePhotoPins[i].id];
+        if (ids == null) continue;
+        final p = _battlePhotoPins[i];
+        _battlePhotoPins[i] = PhotoPin(
+          id: p.id,
+          imagePath: p.imagePath,
+          position: p.position,
+          takenAt: p.takenAt,
+          colorIds: ids,
+          capturedMode: 'battle',
+        );
+      }
+    });
+  }
+
+  /// 対戦写真のピン表示設定を読み込む。
+  Future<void> _loadBattlePinSetting() async {
+    final show = await PhotoDisplaySettingsService.loadShowBattlePhotoPins();
+    if (!mounted) return;
+    setState(() => _showBattlePhotoPins = show);
+  }
+
+  /// 対戦写真のピン表示を切り替えて永続化する。
+  Future<void> _toggleBattlePhotoPins() async {
+    final next = !_showBattlePhotoPins;
+    setState(() => _showBattlePhotoPins = next);
+    await PhotoDisplaySettingsService.saveShowBattlePhotoPins(next);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 2),
+        content: Text(next ? '対戦の写真を地図に表示します' : '対戦の写真を地図から隠しました'),
+      ),
+    );
+  }
+
+  /// 地図にピン表示する写真（マップ／コラージュ ＋ 設定 ON なら対戦写真）。
+  List<PhotoPin> get _pinsOnMap => [
+        ..._photoPins,
+        if (_showBattlePhotoPins) ..._battlePhotoPins,
+      ];
 
   /// 「撮影した写真」一覧に出すピン（散歩・コラージュ ＋ 歴代の対戦）。
   /// 撮影日時の新しい順に並べる。
@@ -240,18 +320,35 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   /// 一覧からの削除。散歩側と対戦履歴側の両方へ振り分ける。
+  /// 画像の実ファイルも削除する（対戦履歴分はサービス側が削除する）。
   void _deletePinsFromList(Set<String> ids) {
     final battleIds = _battlePhotoPins
         .where((p) => ids.contains(p.id))
         .map((p) => p.id)
         .toSet();
+    // 散歩／コラージュ側の実ファイルを削除する。
+    final filesToDelete = _photoPins
+        .where((p) => ids.contains(p.id) && p.imagePath.isNotEmpty)
+        .map((p) => p.imagePath)
+        .toList();
+
     setState(() {
       _photoPins.removeWhere((p) => ids.contains(p.id));
       _battlePhotoPins.removeWhere((p) => ids.contains(p.id));
     });
     _savePhotoPins();
+    _deleteFiles(filesToDelete);
     if (battleIds.isNotEmpty) {
       BattlePhotoHistoryService.deleteByIds(battleIds);
+    }
+  }
+
+  Future<void> _deleteFiles(List<String> paths) async {
+    for (final path in paths) {
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
     }
   }
 
@@ -265,13 +362,12 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  Future<void> _loadBattleFogSettings() async {
-    final use = await PhotoDisplaySettingsService.loadUseBattleFog();
-    final points =
-        use ? await BattlePhotoHistoryService.loadFogPoints() : <LatLng>[];
+  /// 歴代の対戦で通った点（軌跡＋写真位置）を読み込む。
+  /// ON/OFF 設定は廃止し、常に霧晴らしへ反映する。
+  Future<void> _loadBattleFogPoints() async {
+    final points = await BattlePhotoHistoryService.loadFogPoints();
     if (!mounted) return;
     setState(() {
-      _useBattleFog = use;
       _battleFogPoints
         ..clear()
         ..addAll(points);
@@ -279,59 +375,11 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   /// マップモードで霧を晴らす点の一覧。
-  /// 自分の散歩軌跡に加え、設定 ON なら歴代の対戦の軌跡・写真位置も含める。
+  /// 自分の散歩軌跡に加え、歴代の対戦の軌跡・写真位置も常に含める。
   List<LatLng> get _mapFogPoints => [
     ..._mapClearedPoints,
-    if (_useBattleFog) ..._battleFogPoints,
+    ..._battleFogPoints,
   ];
-
-  /// マップモードの霧晴らし設定シート（マップモード限定）。
-  Future<void> _openBattleFogSettings() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        bool use = _useBattleFog;
-        return StatefulBuilder(
-          builder: (ctx, setSheetState) => SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'マップの霧晴らし',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    '散歩で通った場所は常に霧が晴れます。',
-                    style: TextStyle(fontSize: 12, color: Colors.black54),
-                  ),
-                  const SizedBox(height: 8),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('歴代の対戦の軌跡・写真でも霧を晴らす'),
-                    subtitle:
-                        const Text('過去の対戦で通った軌跡と撮影位置からも霧を晴らします'),
-                    value: use,
-                    onChanged: (v) async {
-                      setSheetState(() => use = v);
-                      await PhotoDisplaySettingsService.saveUseBattleFog(v);
-                      await _loadBattleFogSettings();
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
 
   /// マップモードの「散歩を記録する」。範囲ダイアログは出さず、すぐに記録
   /// （＝霧晴らし）を開始する。
@@ -348,12 +396,9 @@ class _MapScreenState extends State<MapScreen> {
     } catch (_) {}
   }
 
-  void _deletePhotoPin(PhotoPin pin) {
-    setState(() {
-      _photoPins.removeWhere((p) => p.id == pin.id);
-    });
-    _savePhotoPins();
-  }
+  /// 地図上のピンからの削除。対戦写真のピンも消せるよう、
+  /// 一覧と同じ振り分け処理（実ファイル削除・履歴更新）へ委譲する。
+  void _deletePhotoPin(PhotoPin pin) => _deletePinsFromList({pin.id});
 
   // ─── 記録開始 ───
   void _startRecording() {
@@ -446,7 +491,7 @@ class _MapScreenState extends State<MapScreen> {
     await BattleOverlay.open(context);
     if (!mounted) return;
     await _loadMapFog();
-    await _loadBattleFogSettings();
+    await _loadBattleFogPoints();
     await _loadBattlePhotoPins();
   }
 
@@ -460,7 +505,7 @@ class _MapScreenState extends State<MapScreen> {
     // マップモードに入るたびに、歴代の対戦データ（軌跡・写真位置）を読み直して
     // 直近の対戦分まで霧晴らしに反映されるようにする。
     if (mode == MapMode.map) {
-      _loadBattleFogSettings();
+      _loadBattleFogPoints();
     }
     // 対戦中に撮った写真を一覧へ反映し直す。
     _loadBattlePhotoPins();
@@ -756,6 +801,9 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 既定ズーム計算のため、現在の画面幅を控えておく。
+    _viewWidthPx = MediaQuery.of(context).size.width;
+
     // 再生モード時にゴーストが辿っている軌跡の全座標
     final ghostFullPath = _mode == MapMode.animation && _ghost != null
         ? _ghost!.track.points.map((p) => p.position).toList()
@@ -764,13 +812,9 @@ class _MapScreenState extends State<MapScreen> {
     // ── フォトモード:地図なし。撮影写真を色ごとに並べてコラージュを作る ──
     if (_mode == MapMode.photo) {
       return PhotoModeScreen(
-        photoPins: _photoPins,
-        onDeletePins: (ids) {
-          setState(() {
-            _photoPins.removeWhere((p) => ids.contains(p.id));
-          });
-          _savePhotoPins();
-        },
+        // 対戦中に撮った写真もコラージュの素材として扱う。
+        photoPins: _allPhotoPinsForList,
+        onDeletePins: _deletePinsFromList,
         modeBar: ModeSwitcher(
           currentMode: _mode,
           onModeChanged: _onModeChanged,
@@ -786,7 +830,8 @@ class _MapScreenState extends State<MapScreen> {
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _currentPosition,
-              initialZoom: 13.0,
+              // 画面の端から端までが実空間で約 3km になる倍率
+              initialZoom: _defaultZoom,
               minZoom: 3.0,
               maxZoom: 19.0,
             ),
@@ -815,12 +860,12 @@ class _MapScreenState extends State<MapScreen> {
                   clearRadiusMeters: _mapClearRadius,
                 ),
               // （コラージュ／マップモードでは、散歩記録中の軌跡は表示しない）
-              // 写真ピン(「マップ」「コラージュ」で撮った写真。対戦の歴代写真は
-              //  ピン表示せず、マップモードの霧晴らしにのみ使う)
-              if (_photoPins.isNotEmpty)
+              // 写真ピン（「マップ」「コラージュ」で撮った写真。
+              //  対戦で撮った写真は右下のトグルで表示/非表示を切り替える）
+              if (_pinsOnMap.isNotEmpty)
                 MarkerLayer(
                   markers: [
-                    for (final pin in _photoPins)
+                    for (final pin in _pinsOnMap)
                       Marker(
                         point: pin.position,
                         width: 56,
@@ -972,19 +1017,30 @@ class _MapScreenState extends State<MapScreen> {
               child: const Icon(Icons.camera_alt),
             ),
           if (_mode != MapMode.animation) const SizedBox(height: 8),
-          // マップの霧晴らし設定（マップモード限定）
+          // 対戦写真のピン表示 ON/OFF（マップモード限定）
           if (_mode == MapMode.map)
             FloatingActionButton.small(
-              onPressed: _openBattleFogSettings,
-              heroTag: 'fog_settings',
-              tooltip: 'マップの霧晴らし設定',
-              child: const Icon(Icons.tune),
+              onPressed: _toggleBattlePhotoPins,
+              heroTag: 'battle_pin_toggle',
+              tooltip: _showBattlePhotoPins
+                  ? '対戦の写真を地図から隠す'
+                  : '対戦の写真を地図に表示する',
+              backgroundColor: _showBattlePhotoPins
+                  ? const Color(0xFFC62828)
+                  : Colors.white,
+              foregroundColor:
+                  _showBattlePhotoPins ? Colors.white : Colors.black54,
+              child: Icon(
+                _showBattlePhotoPins
+                    ? Icons.sports_kabaddi
+                    : Icons.sports_kabaddi_outlined,
+              ),
             ),
           if (_mode == MapMode.map) const SizedBox(height: 8),
           // 現在地に戻る
           FloatingActionButton.small(
             onPressed: _hasLocation
-                ? () => _mapController.move(_currentPosition, 16.0)
+                ? () => _mapController.move(_currentPosition, _defaultZoom)
                 : null,
             heroTag: 'recenter',
             child: const Icon(Icons.my_location),

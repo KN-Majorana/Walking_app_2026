@@ -40,20 +40,34 @@ class _PhotoListScreenState extends State<PhotoListScreen> {
   /// 選択中のピンID
   final Set<String> _selected = {};
 
-  /// 選択モード中かどうか
-  bool get _isSelecting => _selected.isNotEmpty;
+  /// 選択モード中かどうか。
+  /// 以前は「1枚以上選択中」で判定していたため、全解除すると勝手にモードが
+  /// 抜けてしまい、長押し以外に入口も無かった。明示的なフラグで管理する。
+  bool _selectMode = false;
+  bool get _isSelecting => _selectMode;
 
-  /// 選択をすべてクリア
-  void _clearSelection() => setState(() => _selected.clear());
+  /// 選択モードに入る（AppBar の「選択」ボタン／長押しから）
+  void _enterSelection([String? initialId]) {
+    setState(() {
+      _selectMode = true;
+      if (initialId != null) _selected.add(initialId);
+    });
+  }
 
-  /// 選択モードでの削除を実行
-  Future<void> _deleteSelected() async {
-    final count = _selected.length;
+  /// 選択モードを抜ける
+  void _clearSelection() => setState(() {
+        _selectMode = false;
+        _selected.clear();
+      });
+
+  /// 確認ダイアログを出して削除する。[ids] が空なら何もしない。
+  Future<void> _confirmAndDelete(Set<String> ids) async {
+    if (ids.isEmpty) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('写真を削除'),
-        content: Text('選択した $count 枚の写真ピンを削除しますか？'),
+        content: Text('${ids.length} 枚の写真を削除しますか？\nこの操作は取り消せません。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -67,14 +81,59 @@ class _PhotoListScreenState extends State<PhotoListScreen> {
         ],
       ),
     );
-    if (confirmed == true && mounted) {
-      final ids = Set<String>.from(_selected);
-      widget.onDeletePins?.call(ids);
-      setState(() {
-        _pins.removeWhere((p) => ids.contains(p.id));
-        _selected.clear();
-      });
-    }
+    if (confirmed != true || !mounted) return;
+    widget.onDeletePins?.call(ids);
+    setState(() {
+      _pins.removeWhere((p) => ids.contains(p.id));
+      _selected.removeAll(ids);
+      if (_selected.isEmpty) _selectMode = false;
+    });
+  }
+
+  /// 選択モードでの削除を実行
+  Future<void> _deleteSelected() => _confirmAndDelete(Set.of(_selected));
+
+  /// 拡大表示から1枚だけ削除する
+  Future<void> _deleteSingle(PhotoPin pin) => _confirmAndDelete({pin.id});
+
+  /// 写真の拡大表示。ここからも削除できる。
+  void _showPhoto(PhotoPin pin) {
+    showDialog<void>(
+      context: context,
+      builder: (dctx) => Dialog(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: ClipRRect(
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(12)),
+                child: Image.file(File(pin.imagePath)),
+              ),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.pop(dctx);
+                    _deleteSingle(pin);
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('削除'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dctx),
+                  child: const Text('閉じる'),
+                ),
+                const SizedBox(width: 8),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -118,7 +177,16 @@ class _PhotoListScreenState extends State<PhotoListScreen> {
                   },
                 ),
               ]
-            : null,
+            : [
+                // 長押しに気づかなくても削除できるよう、明示的な入口を置く。
+                if (pins.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: () => _enterSelection(),
+                    style: TextButton.styleFrom(foregroundColor: Colors.white),
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: const Text('選択'),
+                  ),
+              ],
       ),
       body: pins.isEmpty
           ? const Center(
@@ -155,21 +223,11 @@ class _PhotoListScreenState extends State<PhotoListScreen> {
                         }
                       });
                     } else {
-                      showDialog(
-                        context: context,
-                        builder: (_) => Dialog(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Image.file(File(pin.imagePath)),
-                          ),
-                        ),
-                      );
+                      _showPhoto(pin);
                     }
                   },
-                  // 長押しで選択モードに入る
-                  onLongPress: () {
-                    setState(() => _selected.add(pin.id));
-                  },
+                  // 長押しでも選択モードに入る
+                  onLongPress: () => _enterSelection(pin.id),
                   child: Stack(
                     fit: StackFit.expand,
                     children: [

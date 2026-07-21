@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../color_extraction.dart';
 import '../photo_pin.dart';
 import 'app_paths.dart';
 
@@ -96,6 +97,32 @@ class BattlePhotoHistoryService {
     } catch (_) {}
   }
 
+  /// 抽出済みの主要色（24色パレットのインデックス）を履歴へ書き戻す。
+  ///
+  /// 対戦モードは専用パレットで色判定するため、フォトモードで使う 24 色の
+  /// 色情報は履歴に入っていない。マップ側で一度だけ抽出し、ここへ保存して
+  /// 次回以降の再計算を避ける。
+  static Future<void> saveColorIds(Map<String, List<int>> colorIdsById) async {
+    if (colorIdsById.isEmpty) return;
+    try {
+      final existing = await loadAll();
+      final updated = existing.map((p) {
+        final ids = colorIdsById[p.id];
+        if (ids == null) return p;
+        return PhotoPin(
+          id: p.id,
+          imagePath: p.imagePath,
+          position: p.position,
+          takenAt: p.takenAt,
+          colorIds: ids,
+          capturedMode: 'battle',
+        );
+      }).toList();
+      final file = await _file();
+      await file.writeAsString(jsonEncode(updated.map(_toJson).toList()));
+    } catch (_) {}
+  }
+
   /// 指定 id の歴代対戦写真を履歴から削除する（写真一覧の削除操作用）。
   /// 実ファイルも併せて削除する。
   static Future<void> deleteByIds(Set<String> ids) async {
@@ -165,14 +192,12 @@ class BattlePhotoHistoryService {
   }
 
   /// マップモードの霧晴らしに使う「歴代の対戦の通過点」。
-  /// 対戦中の移動軌跡 ＋ 対戦写真の撮影位置をまとめて返す。
+  ///
+  /// 霧が晴れるのは「実際に歩いて通った場所」だけという方針のため、
+  /// 対戦中の移動軌跡のみを返す。写真の撮影位置は霧を晴らさない
+  /// （どのモードで撮った写真でも同じ扱い）。
   static Future<List<LatLng>> loadFogPoints() async {
-    final trajectory = await loadTrajectory();
-    final photos = await loadAll();
-    return [
-      ...trajectory,
-      for (final p in photos) p.position,
-    ];
+    return loadTrajectory();
   }
 
   static Future<void> clearAll() async {
@@ -190,6 +215,13 @@ class BattlePhotoHistoryService {
         'latitude': p.position.latitude,
         'longitude': p.position.longitude,
         'takenAt': p.takenAt.toIso8601String(),
+        // フォトモード（24色パレット）でのグループ化に使う主要色。
+        // 対戦モードの色（colorPaletteBattle）とは別物なので、
+        // マップ側で抽出した結果をここへ保存する。
+        'colorNames': p.colorIds
+            .where((i) => i >= 0 && i < colorNames24.length)
+            .map((i) => colorNames24[i])
+            .toList(),
       };
 
   static PhotoPin? _fromJson(Map<String, dynamic> json) {
@@ -202,6 +234,10 @@ class BattlePhotoHistoryService {
           (json['longitude'] as num).toDouble(),
         ),
         takenAt: DateTime.parse(json['takenAt'] as String),
+        colorIds: ((json['colorNames'] as List<dynamic>?) ?? const [])
+            .map((e) => colorNames24.indexOf(e as String))
+            .where((i) => i >= 0)
+            .toList(),
         capturedMode: 'battle',
       );
     } catch (_) {

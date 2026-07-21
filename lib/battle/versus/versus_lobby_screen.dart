@@ -85,6 +85,79 @@ class _VersusLobbyScreenState extends State<VersusLobbyScreen> {
     }
   }
 
+  /// 表示名（ユーザー名）を編集する。
+  /// 変更は users/{uid}.displayName と Firebase Auth の displayName に反映され、
+  /// 以降フレンドの一覧や対戦相手側の表示にも使われる。
+  Future<void> _editDisplayName() async {
+    final me = _me;
+    if (me == null) return;
+
+    final controller = TextEditingController(text: me.displayName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dctx) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (dctx, setDialogState) => AlertDialog(
+            title: const Text('ユーザー名を変更'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: 20,
+              decoration: InputDecoration(
+                labelText: 'ユーザー名',
+                hintText: '対戦相手やフレンドに表示されます',
+                errorText: errorText,
+              ),
+              onSubmitted: (v) {
+                if (v.trim().isNotEmpty) Navigator.pop(dctx, v.trim());
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dctx),
+                child: const Text('キャンセル'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final v = controller.text.trim();
+                  if (v.isEmpty) {
+                    setDialogState(() => errorText = '1 文字以上入力してください');
+                    return;
+                  }
+                  Navigator.pop(dctx, v);
+                },
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (newName == null || newName == me.displayName) return;
+
+    try {
+      await FirestoreSyncService.setDisplayName(newName);
+      if (!mounted) return;
+      setState(() {
+        _me = FriendProfile(
+          uid: me.uid,
+          displayName: newName,
+          code: me.code,
+        );
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ユーザー名を変更しました')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ユーザー名の変更に失敗: $e')),
+      );
+    }
+  }
+
   void _subscribeIncoming() {
     final me = _me;
     if (me == null) return;
@@ -292,9 +365,21 @@ class _VersusLobbyScreenState extends State<VersusLobbyScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(me.displayName,
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(me.displayName,
+                              style: const TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.bold)),
+                        ),
+                        // ユーザー名の変更
+                        TextButton.icon(
+                          onPressed: _editDisplayName,
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                          label: const Text('名前を変更'),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 4),
                     Text('あなたのコード: ${me.code ?? '----'}'),
                     const SizedBox(height: 12),

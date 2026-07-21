@@ -17,9 +17,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../battle_overlay.dart';
+import '../../map_zoom.dart';
 import '../../path_fog_overlay.dart';
 import '../../services/map_fog_storage_service.dart';
-import '../../services/photo_display_settings_service.dart';
 import '../battle_mode_scope.dart';
 import '../../color_extraction.dart';
 import '../current_location_marker.dart';
@@ -106,6 +106,16 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   /// マップモードと同じ霧の消去半径（メートル）。
   static const double _fogClearRadius = 30.0;
+
+  /// 直近の build 時の画面幅（論理ピクセル）。既定ズームの計算に使う。
+  double _viewWidthPx = 400;
+
+  /// 画面の端から端までが約 3km になるズームレベル（マップモードと共通）。
+  double get _defaultZoom => MapZoom.forSpan(
+        widthPx: _viewWidthPx,
+        latitude: _currentPosition.latitude,
+        spanMeters: kDefaultMapSpanMeters,
+      );
 
   /// 直近で霧データを永続化した時点の点数（保存の間引き用）。
   int _fogSavedCount = 0;
@@ -214,9 +224,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       saved = await MapFogStorageService.loadAll();
     } catch (_) {}
     try {
-      if (await PhotoDisplaySettingsService.loadUseBattleFog()) {
-        battleHistory = await BattlePhotoHistoryService.loadFogPoints();
-      }
+      // 歴代の対戦の軌跡・写真位置は常に霧晴らしへ反映する（設定は廃止）。
+      battleHistory = await BattlePhotoHistoryService.loadFogPoints();
     } catch (_) {}
     _fogClearedPoints
       ..clear()
@@ -244,7 +253,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       // 対戦中は記録開始の有無に関わらず、通過地点の霧を無条件で晴らす。
       _clearFogAt(_currentPosition);
       if (mounted) setState(() {});
-      _mapController.move(_currentPosition, 15.0);
+      _mapController.move(_currentPosition, _defaultZoom);
       _centeredOnce = true;
       // 起動直後に1度アップロード（相手側にすぐ表示させるため）。
       _uploadMyLocation();
@@ -261,7 +270,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       // 対戦中の移動軌跡を蓄積（歴代データ用）。
       _myTrail.add(pos);
       if (!_centeredOnce) {
-        _mapController.move(_currentPosition, 15.0);
+        _mapController.move(_currentPosition, _defaultZoom);
         _centeredOnce = true;
       }
     });
@@ -975,6 +984,9 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 既定ズーム計算のため、現在の画面幅を控えておく。
+    _viewWidthPx = MediaQuery.of(context).size.width;
+
     final b = _battle;
     final myUid = _myUid;
 
@@ -1011,7 +1023,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _currentPosition,
-              initialZoom: 13,
+              // 画面の端から端までが実空間で約 3km になる倍率
+              initialZoom: _defaultZoom,
               minZoom: 3,
               maxZoom: 19,
             ),

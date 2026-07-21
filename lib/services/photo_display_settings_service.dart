@@ -1,23 +1,22 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// マップモードの霧晴らしに関する表示設定を永続化するサービス。
+/// マップモードの写真表示に関する設定を永続化するサービス。
 ///
-/// [loadUseBattleFog] が true の場合、マップモードでは「歴代の対戦」で通った
-/// 場所（対戦中の移動軌跡＋対戦写真の撮影位置）からも霧を晴らす。
-/// この機能はマップモード限定（コラージュモードには表示しない）。
+/// 「歴代の対戦の軌跡から霧を晴らすか」の設定は廃止した（常時オン）。
+/// 現在は「対戦中に撮った写真をマップモードの地図へピン表示するか」だけを持つ。
 class PhotoDisplaySettingsService {
   PhotoDisplaySettingsService._();
 
-  static const _keyUseBattleFog = 'use_battle_history_fog';
+  static const _keyShowBattlePhotoPins = 'show_battle_photo_pins';
 
-  /// 歴代の対戦の軌跡・写真から霧を晴らすか（デフォルト true）。
-  static Future<bool> loadUseBattleFog() async {
+  /// 対戦写真をマップモードの地図にピン表示するか（デフォルト true）。
+  static Future<bool> loadShowBattlePhotoPins() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_keyUseBattleFog) ?? true;
+    return prefs.getBool(_keyShowBattlePhotoPins) ?? true;
   }
 
-  static Future<void> saveUseBattleFog(bool value) async {
+  static Future<void> saveShowBattlePhotoPins(bool value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_keyUseBattleFog, value);
+    await prefs.setBool(_keyShowBattlePhotoPins, value);
   }
 }
