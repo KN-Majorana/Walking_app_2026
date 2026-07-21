@@ -22,7 +22,7 @@ class MapZoom {
   static double forSpan({
     required double widthPx,
     required double latitude,
-    double spanMeters = 1500,
+    double spanMeters = kDefaultMapSpanMeters,
     double minZoom = 3,
     double maxZoom = 19,
   }) {
@@ -38,7 +38,7 @@ class MapZoom {
   static double forSpanOf(
     BuildContext context, {
     required double latitude,
-    double spanMeters = 3000,
+    double spanMeters = kDefaultMapSpanMeters,
   }) {
     final width = MediaQuery.of(context).size.width;
     return forSpan(widthPx: width, latitude: latitude, spanMeters: spanMeters);
@@ -47,5 +47,8 @@ class MapZoom {
   static double _log2(double x) => math.log(x) / math.ln2;
 }
 
-/// アプリ全体で使う既定の表示範囲（画面の端から端まで＝約 3km）。
-const double kDefaultMapSpanMeters = 3000;
+/// アプリ全体で使う既定の表示範囲（画面の端から端まで＝約 1.5km）。
+///
+/// 初期表示・「現在地に戻る」ボタン・対戦画面の地図がすべてこの値を使う。
+/// 縮尺を変えたいときはここだけ直せばよい。
+const double kDefaultMapSpanMeters = 1500;

@@ -97,7 +97,11 @@ class _MapScreenState extends State<MapScreen> {
   /// build より前に地図を動かす経路があるため、初期値を持たせておく。
   double _viewWidthPx = 400;
 
-  /// 画面の端から端までが約 3km になるズームレベル。
+  /// 地図の現在のズーム値。写真ピンの表示数・大きさの制御に使う。
+  /// 初期値は既定ズーム相当（build 前に参照されても破綻しないように）。
+  double _currentZoom = 15.0;
+
+  /// 画面の端から端までが約 1.5km になるズームレベル。
   double get _defaultZoom => MapZoom.forSpan(
         widthPx: _viewWidthPx,
         latitude: _currentPosition.latitude,
@@ -306,6 +310,35 @@ class _MapScreenState extends State<MapScreen> {
         ..._photoPins,
         if (_showBattlePhotoPins) ..._battlePhotoPins,
       ];
+
+  /// 現在のズームでの写真ピンの上限枚数。
+  /// 縮小するほど枚数を絞り、地図がサムネイルで埋まらないようにする。
+  /// しきい値は既定ズーム（画面幅 1.5km ≒ zoom 15）を基準にしている。
+  int get _photoPinLimit {
+    if (_currentZoom < 13.0) return 0; // 広域: 非表示
+    if (_currentZoom < 14.5) return 12;
+    if (_currentZoom < 16.0) return 40;
+    return _pinsOnMap.length; // 既定〜拡大: 全件
+  }
+
+  /// 現在のズームでの写真ピンの直径。
+  double get _photoPinSize {
+    if (_currentZoom < 13.0) return 24;
+    if (_currentZoom < 14.5) return 28;
+    if (_currentZoom < 16.0) return 34;
+    return 44;
+  }
+
+  /// 実際に地図へ描くピン。上限に達している場合は新しい写真を優先する。
+  List<PhotoPin> get _visiblePhotoPins {
+    final limit = _photoPinLimit;
+    if (limit <= 0) return const [];
+    final all = _pinsOnMap;
+    if (all.length <= limit) return all;
+    final sorted = List<PhotoPin>.of(all)
+      ..sort((a, b) => b.takenAt.compareTo(a.takenAt));
+    return sorted.take(limit).toList();
+  }
 
   /// 「撮影した写真」一覧に出すピン（散歩・コラージュ ＋ 歴代の対戦）。
   /// 撮影日時の新しい順に並べる。
@@ -804,6 +837,10 @@ class _MapScreenState extends State<MapScreen> {
     // 既定ズーム計算のため、現在の画面幅を控えておく。
     _viewWidthPx = MediaQuery.of(context).size.width;
 
+    // 縮小時は写真ピンを減らし、拡大すると段階的に増やす。
+    final visiblePhotoPins = _visiblePhotoPins;
+    final photoPinSize = _photoPinSize;
+
     // 再生モード時にゴーストが辿っている軌跡の全座標
     final ghostFullPath = _mode == MapMode.animation && _ghost != null
         ? _ghost!.track.points.map((p) => p.position).toList()
@@ -834,6 +871,12 @@ class _MapScreenState extends State<MapScreen> {
               initialZoom: _defaultZoom,
               minZoom: 3.0,
               maxZoom: 19.0,
+              // ズームが変わったら写真ピンの表示数・大きさを見直す。
+              // 微小な変化では再描画しない（0.05 未満は無視）。
+              onPositionChanged: (camera, hasGesture) {
+                if ((camera.zoom - _currentZoom).abs() < 0.05) return;
+                setState(() => _currentZoom = camera.zoom);
+              },
             ),
             children: [
               TileLayer(
@@ -862,21 +905,24 @@ class _MapScreenState extends State<MapScreen> {
               // （コラージュ／マップモードでは、散歩記録中の軌跡は表示しない）
               // 写真ピン（「マップ」「コラージュ」で撮った写真。
               //  対戦で撮った写真は右下のトグルで表示/非表示を切り替える）
-              if (_pinsOnMap.isNotEmpty)
+              if (visiblePhotoPins.isNotEmpty)
                 MarkerLayer(
                   markers: [
-                    for (final pin in _pinsOnMap)
+                    for (final pin in visiblePhotoPins)
                       Marker(
                         point: pin.position,
-                        width: 56,
-                        height: 56,
+                        width: photoPinSize,
+                        height: photoPinSize,
                         child: GestureDetector(
                           onTap: () => PhotoDetailSheet.show(
                             context,
                             pin,
                             onDelete: () => _deletePhotoPin(pin),
                           ),
-                          child: PhotoPinMarker(imagePath: pin.imagePath),
+                          child: PhotoPinMarker(
+                            imagePath: pin.imagePath,
+                            size: photoPinSize,
+                          ),
                         ),
                       ),
                   ],

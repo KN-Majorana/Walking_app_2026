@@ -102,6 +102,8 @@ flutter:
     # 霧の雲テクスチャ。fog.png を置くとリアルな雲画像に差し替えられる
     # （無ければ起動時にプロシージャル生成した雲を使う）
     - assets/fog/
+    # 起動時のローディング画面の背景（loading_source.png）
+    - assets/launch/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
