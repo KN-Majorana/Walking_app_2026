@@ -79,6 +79,11 @@ class _MapScreenState extends State<MapScreen> {
   DateTime? _ghostStartedAt;
   LatLng? _ghostPosition;
 
+  /// 再生モードの霧を晴らした地点。
+  /// ゴーストが進むにつれて追加され、通った場所だけが順に晴れていく。
+  /// マップモードの霧（_mapClearedPoints）とは別物で、再生のたびにリセットする。
+  final List<LatLng> _ghostClearedPoints = [];
+
   // 写真ピン(撮影した位置に表示)
   final List<PhotoPin> _photoPins = [];
 
@@ -586,6 +591,10 @@ class _MapScreenState extends State<MapScreen> {
       _ghost = ghost;
       _ghostStartedAt = DateTime.now();
       _ghostPosition = selected.points.first.position;
+      // 霧は再生開始時点まで戻し、出発地点だけを晴らしておく。
+      _ghostClearedPoints
+        ..clear()
+        ..add(selected.points.first.position);
     });
 
     // 軌跡の先頭にカメラを寄せる
@@ -597,7 +606,10 @@ class _MapScreenState extends State<MapScreen> {
 
       // 最後まで再生し終えたら、ループせずそこで終了する
       if (_ghost!.isFinished(elapsed)) {
-        setState(() => _ghostPosition = selected.points.last.position);
+        setState(() {
+          _ghostPosition = selected.points.last.position;
+          _revealGhostFog(selected.points.last.position);
+        });
         _ghostTimer?.cancel();
         _ghostTimer = null;
         return;
@@ -605,9 +617,22 @@ class _MapScreenState extends State<MapScreen> {
 
       final pos = _ghost!.positionAt(elapsed);
       if (pos != null) {
-        setState(() => _ghostPosition = pos);
+        setState(() {
+          _ghostPosition = pos;
+          _revealGhostFog(pos);
+        });
       }
     });
+  }
+
+  /// 再生中のゴーストが通った地点を霧の消去点へ追加する。
+  /// 近すぎる点は間引いて、描画する円が増えすぎないようにする。
+  void _revealGhostFog(LatLng pos) {
+    if (_ghostClearedPoints.isNotEmpty &&
+        _distanceCalc(_ghostClearedPoints.last, pos) < 8) {
+      return;
+    }
+    _ghostClearedPoints.add(pos);
   }
 
   // ─── 再生停止 ───
@@ -953,6 +978,13 @@ class _MapScreenState extends State<MapScreen> {
               if (_mode == MapMode.map)
                 PathFogOverlay(
                   clearedPoints: _mapFogPoints,
+                  clearRadiusMeters: _mapClearRadius,
+                  fullClearRadiusMeters: _mapFullClearRadius,
+                ),
+              // 再生モード: 霧を戻したうえで、ゴーストが通った場所から順に晴らす
+              if (_mode == MapMode.animation)
+                PathFogOverlay(
+                  clearedPoints: _ghostClearedPoints,
                   clearRadiusMeters: _mapClearRadius,
                   fullClearRadiusMeters: _mapFullClearRadius,
                 ),
