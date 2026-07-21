@@ -22,7 +22,7 @@ class MapZoom {
   static double forSpan({
     required double widthPx,
     required double latitude,
-    double spanMeters = 3000,
+    double spanMeters = 1500,
     double minZoom = 3,
     double maxZoom = 19,
   }) {
@@ -41,11 +41,7 @@ class MapZoom {
     double spanMeters = 3000,
   }) {
     final width = MediaQuery.of(context).size.width;
-    return forSpan(
-      widthPx: width,
-      latitude: latitude,
-      spanMeters: spanMeters,
-    );
+    return forSpan(widthPx: width, latitude: latitude, spanMeters: spanMeters);
   }
 
   static double _log2(double x) => math.log(x) / math.ln2;
