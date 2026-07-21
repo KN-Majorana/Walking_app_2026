@@ -91,7 +91,10 @@ class _MapScreenState extends State<MapScreen> {
   // これまで歩いて霧を晴らした地点（再起動後も保持）
   final List<LatLng> _mapClearedPoints = [];
   // マップモードで霧を晴らす半径（メートル）
+  // 中心から _mapFullClearRadius までは完全に晴れ、そこから
+  // _mapClearRadius にかけてグラデーションで霧に戻る。
   static const double _mapClearRadius = 30.0;
+  static const double _mapFullClearRadius = 25.0;
 
   /// 直近の build 時の画面幅（論理ピクセル）。既定ズームの計算に使う。
   /// build より前に地図を動かす経路があるため、初期値を持たせておく。
@@ -901,6 +904,7 @@ class _MapScreenState extends State<MapScreen> {
                 PathFogOverlay(
                   clearedPoints: _mapFogPoints,
                   clearRadiusMeters: _mapClearRadius,
+                  fullClearRadiusMeters: _mapFullClearRadius,
                 ),
               // （コラージュ／マップモードでは、散歩記録中の軌跡は表示しない）
               // 写真ピン（「マップ」「コラージュ」で撮った写真。

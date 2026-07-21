@@ -105,7 +105,9 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   List<LatLng> get _fogPoints => [..._fogClearedPoints, ..._fogHistoryPoints];
 
   /// マップモードと同じ霧の消去半径（メートル）。
+  /// 内側 _fogFullClearRadius までは完全に晴れ、外周はグラデーションで戻す。
   static const double _fogClearRadius = 30.0;
+  static const double _fogFullClearRadius = 25.0;
 
   /// 直近の build 時の画面幅（論理ピクセル）。既定ズームの計算に使う。
   double _viewWidthPx = 400;
@@ -1041,6 +1043,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
               PathFogOverlay(
                 clearedPoints: _fogPoints,
                 clearRadiusMeters: _fogClearRadius,
+                fullClearRadiusMeters: _fogFullClearRadius,
               ),
               // ★ 対戦ポリゴン描画（Demotest3-3 方式 + 実行時視覚的減算）
               //   A∩B は常に A（新しい方）の色のみで塗られる。
