@@ -94,7 +94,7 @@ class _MapScreenState extends State<MapScreen> {
   // 中心から _mapFullClearRadius までは完全に晴れ、そこから
   // _mapClearRadius にかけてグラデーションで霧に戻る。
   static const double _mapClearRadius = 30.0;
-  static const double _mapFullClearRadius = 25.0;
+  static const double _mapFullClearRadius = 20.0;
 
   /// 直近の build 時の画面幅（論理ピクセル）。既定ズームの計算に使う。
   /// build より前に地図を動かす経路があるため、初期値を持たせておく。

@@ -24,18 +24,18 @@ class ModeSwitcher extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             _Tab(
-              label: 'フォト',
-              icon: Icons.photo_library_outlined,
-              isSelected: currentMode == MapMode.photo,
-              onTap: () => onModeChanged(MapMode.photo),
-              activeColor: Colors.indigo,
-            ),
-            _Tab(
               label: 'マップ',
               icon: Icons.map_outlined,
               isSelected: currentMode == MapMode.map,
               onTap: () => onModeChanged(MapMode.map),
               activeColor: const Color(0xFF00796B),
+            ),
+            _Tab(
+              label: 'フォト',
+              icon: Icons.photo_library_outlined,
+              isSelected: currentMode == MapMode.photo,
+              onTap: () => onModeChanged(MapMode.photo),
+              activeColor: Colors.indigo,
             ),
             // 対戦はモードタブから外し、マップモードの左端スワイプで
             // 全画面オーバーレイとして呼び出す方式に変更した。

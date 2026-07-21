@@ -1,4 +1,4 @@
-import 'dart:math' show Point, sin, cos, sqrt, atan2;
+import 'dart:math' show Point, sin, cos, sqrt, atan2, pow;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -188,18 +188,35 @@ class _FogPainter extends CustomPainter {
     return result;
   }
 
+  /// 雲テクスチャを地図に貼り付けて描く（マップモードの霧と同じ方式）。
+  /// 雲 1 枚を実距離 [FogTexture.tileMeters] 四方として扱い、
+  /// 地図上の固定点を基準に鏡張りで並べるので、拡大縮小・移動に追従する。
   void _paintFogFill(Canvas canvas, Rect bounds) {
-    final tex = FogTexture.image;
-    if (tex != null) {
-      canvas.drawImageRect(
-        tex,
-        Rect.fromLTWH(0, 0, tex.width.toDouble(), tex.height.toDouble()),
-        bounds,
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-    } else {
+    final mpp = 156543.03392 *
+        cos(camera.center.latitude * 3.141592653589793 / 180) /
+        pow(2, camera.zoom);
+    if (mpp <= 0) {
       canvas.drawRect(bounds, Paint()..color = fogColor);
+      return;
     }
+
+    final tileSizePx = FogTexture.tileMeters / mpp;
+    final origin = camera.latLngToScreenPoint(const LatLng(0, 0));
+    final period = tileSizePx * 2; // 鏡張りは 2 枚で 1 周期
+
+    double wrap(double v) {
+      final m = v % period;
+      return m.isNaN ? 0 : m;
+    }
+
+    FogTexture.paintWorldTiles(
+      canvas,
+      bounds,
+      tileSizePx: tileSizePx,
+      offsetX: wrap(origin.x),
+      offsetY: wrap(origin.y),
+      fallbackColor: fogColor,
+    );
   }
 
   @override

@@ -77,31 +77,62 @@ class _PathFogPainter extends CustomPainter {
     return 156543.03392 * cos(latitude * _deg2rad) / pow(2, camera.zoom);
   }
 
+  /// 雲テクスチャを地図に貼り付けて描く。
+  ///
+  /// 雲 1 枚を実距離 [FogTexture.tileMeters] 四方として扱い、
+  /// 地図上の固定点（赤道・本初子午線）を基準にタイルを並べる。
+  /// これにより、拡大縮小でも移動でも雲が地図に貼り付いたまま動く。
+  void _paintFogTexture(Canvas canvas, Rect bounds) {
+    final mpp = _metersPerPixel(camera.center.latitude);
+    if (mpp <= 0) {
+      canvas.drawRect(bounds, Paint()..color = fogColor);
+      return;
+    }
+
+    final tileSizePx = FogTexture.tileMeters / mpp;
+
+    // 基準点（0,0）の画面座標を求め、そこからタイルの位置を決める。
+    final origin = camera.latLngToScreenPoint(const LatLng(0, 0));
+
+    // 鏡張りは 2 枚で 1 周期。周期で剰余を取り、シェーダへ渡す値を
+    // 小さく保つ（GPU は float32 精度なので大きい座標だとズレる）。
+    final period = tileSizePx * 2;
+    double wrap(double v) {
+      final m = v % period;
+      return m.isNaN ? 0 : m;
+    }
+
+    FogTexture.paintWorldTiles(
+      canvas,
+      bounds,
+      tileSizePx: tileSizePx,
+      offsetX: wrap(origin.x),
+      offsetY: wrap(origin.y),
+      fallbackColor: fogColor,
+    );
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final bounds = Offset.zero & size;
 
     // 霧レイヤー（saveLayer で合成し、円を clear で抜く）
     canvas.saveLayer(bounds, Paint());
-    final tex = FogTexture.image;
-    if (tex != null) {
-      canvas.drawImageRect(
-        tex,
-        Rect.fromLTWH(0, 0, tex.width.toDouble(), tex.height.toDouble()),
-        bounds,
-        Paint()..filterQuality = FilterQuality.medium,
-      );
-    } else {
-      canvas.drawRect(bounds, Paint()..color = fogColor);
-    }
+    // 雲は地図に貼り付いて拡大縮小・移動する。
+    _paintFogTexture(canvas, bounds);
 
     // 晴れている場所を抜く。内側は完全に透明、外周に向けて徐々に霧へ戻す。
-    // BlendMode.clear はペイントのアルファ分だけ消すので、
-    // 放射状グラデーション（中心=不透明 → 外周=透明）で境界をぼかせる。
+    //
+    // ★ BlendMode.clear ではなく dstOut を使うこと。
+    //   clear は「描いた範囲を無条件に消す」ので、放射状グラデーションの
+    //   アルファが無視されて縁がくっきり出てしまう。
+    //   dstOut は  Ar = Ad * (1 - As)  なので、ソースのアルファぶんだけ
+    //   霧が薄くなり、グラデーションがそのまま効く。
     final clearPaint = Paint()
-      ..blendMode = BlendMode.clear
+      ..blendMode = BlendMode.dstOut
       ..style = PaintingStyle.fill
-      ..isAntiAlias = true;
+      ..isAntiAlias = true
+      ..color = const Color(0xFFFFFFFF);
 
     // グラデーションが始まる位置（0.0〜1.0）。
     // 例: 25m / 30m なら 0.833 から外側だけがぼける。

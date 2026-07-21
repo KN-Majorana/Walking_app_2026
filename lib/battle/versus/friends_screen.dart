@@ -55,6 +55,49 @@ class _FriendsScreenState extends State<FriendsScreen> {
     }
   }
 
+  /// 確認ダイアログを出してフレンドを削除する。
+  ///
+  /// 削除するのは自分の users/{uid}/friends/{相手} だけで、
+  /// 相手のフレンド一覧からは自分は消えない（片方向）。
+  /// 戻り値は実際に削除したかどうか（スワイプ削除の確定判定にも使う）。
+  Future<bool> _confirmAndRemove(FriendProfile f) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('フレンドを削除'),
+        content: Text('${f.displayName} をフレンドから削除しますか？\n'
+            'もう一度追加するにはコードの入力が必要です。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return false;
+
+    try {
+      await FirestoreSyncService.removeFriend(f.uid);
+      if (!mounted) return true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${f.displayName} を削除しました')),
+      );
+      return true;
+    } catch (e) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('削除に失敗: $e')),
+      );
+      return false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final myCode = widget.myProfile.code ?? '----';
@@ -139,28 +182,39 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (_, i) {
                     final f = list[i];
-                    return ListTile(
-                      leading: CircleAvatar(
-                        child: Text(f.displayName.characters.first),
+                    // 右スワイプでも削除できる（確認ダイアログを挟む）。
+                    return Dismissible(
+                      key: ValueKey(f.uid),
+                      direction: DismissDirection.startToEnd,
+                      confirmDismiss: (_) => _confirmAndRemove(f),
+                      background: Container(
+                        color: Colors.red,
+                        alignment: Alignment.centerLeft,
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: const Icon(Icons.delete_outline,
+                            color: Colors.white),
                       ),
-                      title: Text(f.displayName),
-                      subtitle: Text('コード: ${f.code ?? '----'}'),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (widget.onChooseAsOpponent != null)
-                            TextButton(
-                              onPressed: () => widget.onChooseAsOpponent!(f),
-                              child: const Text('対戦相手にする'),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          child: Text(f.displayName.characters.first),
+                        ),
+                        title: Text(f.displayName),
+                        subtitle: Text('コード: ${f.code ?? '----'}'),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (widget.onChooseAsOpponent != null)
+                              TextButton(
+                                onPressed: () => widget.onChooseAsOpponent!(f),
+                                child: const Text('対戦相手にする'),
+                              ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline),
+                              tooltip: '削除',
+                              onPressed: () => _confirmAndRemove(f),
                             ),
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline),
-                            tooltip: '削除',
-                            onPressed: () async {
-                              await FirestoreSyncService.removeFriend(f.uid);
-                            },
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     );
                   },
