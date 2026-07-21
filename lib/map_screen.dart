@@ -988,17 +988,13 @@ class _MapScreenState extends State<MapScreen> {
                     Marker(
                       point: _currentPosition,
                       // ビームが丸からはみ出すぶん、マーカーを大きめに取る。
+                      // （ここを 13x13 にするとビームも 13px に潰れる）
                       width: 46,
                       height: 46,
-                      child: Center(
-                        child: SizedBox(
-                          width: 13,
-                          height: 13,
-                          child: CurrentLocationMarker(
-                            headingDegrees: _heading,
-                            mapRotationDegrees: _mapRotation,
-                          ),
-                        ),
+                      child: CurrentLocationMarker(
+                        headingDegrees: _heading,
+                        mapRotationDegrees: _mapRotation,
+                        dotSize: 13,
                       ),
                     ),
                   ],

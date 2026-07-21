@@ -5,23 +5,31 @@ import 'package:flutter/material.dart';
 /// 現在地を示す青い丸マーカー。
 ///
 /// [headingDegrees] を渡すと、Google Maps のように端末が向いている方向へ
-/// 扇形のビームを描く。null（向き不明）のときは従来どおり丸だけを表示する。
+/// 扇形のビームを描く。null（向き不明）のときは丸だけを表示する。
 ///
 /// [mapRotationDegrees] は地図の回転角。地図を回した状態でも
-/// ビームが実際の方位を指すよう、方位から差し引いて描画する。
+/// ビームが実際の方位を指すよう、方位に足し込んで描画する。
+///
+/// ビームは与えられた領域いっぱいに広がるので、呼び出し側は
+/// 丸より大きめの Marker（46x46 程度）を用意すること。丸の大きさは
+/// [dotSize] で指定する。
 class CurrentLocationMarker extends StatelessWidget {
   final double? headingDegrees;
   final double mapRotationDegrees;
+  final double dotSize;
 
   const CurrentLocationMarker({
     super.key,
     this.headingDegrees,
     this.mapRotationDegrees = 0,
+    this.dotSize = 13,
   });
 
   @override
   Widget build(BuildContext context) {
     final dot = Container(
+      width: dotSize,
+      height: dotSize,
       decoration: BoxDecoration(
         color: Colors.blue,
         shape: BoxShape.circle,
@@ -32,23 +40,19 @@ class CurrentLocationMarker extends StatelessWidget {
       ),
     );
 
-    if (headingDegrees == null) return dot;
+    if (headingDegrees == null) return Center(child: dot);
 
-    // 画面上での向き。地図が回っている分を差し引く。
+    // 画面上での向き。地図が回っている分を足す。
     final screenHeading = headingDegrees! + mapRotationDegrees;
 
-    // ビームは丸より大きく描くので、はみ出しを許可する Stack で重ねる。
     return Stack(
-      clipBehavior: Clip.none,
       alignment: Alignment.center,
       children: [
-        Positioned(
+        // ビームは領域いっぱいに描く（Positioned.fill で制約を広げる）。
+        Positioned.fill(
           child: Transform.rotate(
             angle: screenHeading * math.pi / 180,
-            child: CustomPaint(
-              size: const Size(46, 46),
-              painter: const _HeadingBeamPainter(),
-            ),
+            child: const CustomPaint(painter: _HeadingBeamPainter()),
           ),
         ),
         dot,
@@ -68,9 +72,10 @@ class _HeadingBeamPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final c = Offset(size.width / 2, size.height / 2);
     final radius = size.shortestSide / 2;
+    if (radius <= 0) return;
 
     const spread = _spreadDegrees * math.pi / 180;
-    // -90 度で真上（Canvas の 0 度は右方向のため）
+    // Canvas の 0 度は右方向なので、-90 度で真上になる
     final start = -math.pi / 2 - spread / 2;
 
     final rect = Rect.fromCircle(center: c, radius: radius);
