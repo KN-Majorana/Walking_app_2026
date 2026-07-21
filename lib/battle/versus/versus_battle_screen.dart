@@ -22,7 +22,10 @@ import '../../path_fog_overlay.dart';
 import '../../services/map_fog_storage_service.dart';
 import '../battle_mode_scope.dart';
 import '../../color_extraction.dart';
-import '../current_location_marker.dart';
+// 方位ビーム付きの現在地マーカー（マップモードと共通のもの）を使う。
+import '../../current_location_marker.dart';
+import '../../compass_service.dart';
+import '../../map_compass.dart';
 import '../location_service.dart';
 import '../models/battle.dart';
 import '../models/polygon.dart';
@@ -112,6 +115,13 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   /// 直近の build 時の画面幅（論理ピクセル）。既定ズームの計算に使う。
   double _viewWidthPx = 400;
 
+  /// 地図の回転角（度）。コンパスの針と現在地ビームの向きに使う。
+  double _mapRotation = 0;
+
+  /// 端末が向いている方位（度・真北が 0）。null は向き不明。
+  double? _heading;
+  StreamSubscription<double?>? _headingSub;
+
   /// 画面の端から端までが約 3km になるズームレベル（マップモードと共通）。
   double get _defaultZoom => MapZoom.forSpan(
         widthPx: _viewWidthPx,
@@ -146,12 +156,18 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     // 対戦中は右端スワイプでマップへ戻れないようにする（誤操作防止）。
     // ロビー／リザルトへ遷移すると dispose で再び有効化される。
     BattleOverlay.swipeBackEnabled.value = false;
+    // 端末の向き（磁気コンパス）。センサーが無い端末では何も流れない。
+    _headingSub = CompassService.heading().listen((h) {
+      if (!mounted || h == null) return;
+      setState(() => _heading = h);
+    });
     _bootstrap();
   }
 
   @override
   void dispose() {
     BattleOverlay.swipeBackEnabled.value = true;
+    _headingSub?.cancel();
     _saveFogPoints();
     _flushTrail();
     _battleSub?.cancel();
@@ -161,6 +177,18 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     _tick?.cancel();
     _locUploadTimer?.cancel();
     super.dispose();
+  }
+
+  /// 現在地ボタン。位置・縮尺に加えて、地図の回転も北向きへ戻す。
+  void _backToCurrentLocation() {
+    _mapController.moveAndRotate(_currentPosition, _defaultZoom, 0);
+    setState(() => _mapRotation = 0);
+  }
+
+  /// コンパスのタップ。向きだけ北へ戻す（位置と縮尺はそのまま）。
+  void _resetRotation() {
+    _mapController.rotate(0);
+    setState(() => _mapRotation = 0);
   }
 
   /// 対戦中に晴らした霧を、マップモードと同じストレージへ永続化する。
@@ -1029,6 +1057,11 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
               initialZoom: _defaultZoom,
               minZoom: 3,
               maxZoom: 19,
+              // 地図の回転をコンパスと現在地ビームへ反映する。
+              onPositionChanged: (camera, hasGesture) {
+                if ((camera.rotation - _mapRotation).abs() < 0.5) return;
+                setState(() => _mapRotation = camera.rotation);
+              },
             ),
             children: [
               TileLayer(
@@ -1101,9 +1134,14 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
                   markers: [
                     Marker(
                       point: _currentPosition,
-                      width: 13,
-                      height: 13,
-                      child: const CurrentLocationMarker(),
+                      // ビームが丸からはみ出すぶん、マーカーを大きめに取る。
+                      width: 46,
+                      height: 46,
+                      child: CurrentLocationMarker(
+                        headingDegrees: _heading,
+                        mapRotationDegrees: _mapRotation,
+                        dotSize: 13,
+                      ),
                     ),
                   ],
                 ),
@@ -1212,6 +1250,21 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
             ),
           ),
 
+          // 右上：コンパス（強制終了メニューの下。タップで北向きに戻す）
+          Positioned(
+            top: 0,
+            right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(right: 12, top: topSpace + 44),
+                child: MapCompass(
+                  rotationDegrees: _mapRotation,
+                  onTap: _resetRotation,
+                ),
+              ),
+            ),
+          ),
+
           // 最上部中央：モード切替バー（地図に重ねて表示）
           // パディングはコラージュ/再生モード（map_screen 側の EdgeInsets.all(16)）と
           // 揃えて、モード間でバー位置が一致するようにしている。
@@ -1230,12 +1283,25 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
         ],
       ),
 
-      // 右下：多角形を作るボタン
-      floatingActionButton: FloatingActionButton(
-        heroTag: 'create_polygon',
-        tooltip: '多角形を作る',
-        onPressed: _openCreatePolygonFlow,
-        child: const Icon(Icons.brush),
+      // 右下：現在地に戻る／多角形を作る
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'battle_my_location',
+            tooltip: '現在地に戻る',
+            onPressed: _hasLocation ? _backToCurrentLocation : null,
+            child: const Icon(Icons.my_location),
+          ),
+          const SizedBox(height: 10),
+          FloatingActionButton(
+            heroTag: 'create_polygon',
+            tooltip: '多角形を作る',
+            onPressed: _openCreatePolygonFlow,
+            child: const Icon(Icons.brush),
+          ),
+        ],
       ),
     );
   }
