@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -102,18 +103,88 @@ class FirestoreSyncService {
   // フレンド
   // ─────────────────────────────────────────
 
+  /// フレンド一覧を購読する。
+  ///
+  /// users/{me}/friends/{相手} には追加した時点の表示名がコピーされているが、
+  /// 相手が名前を変えてもこのコピーは古いままになる。
+  /// （相手のドキュメントへは書き込めないので、相手側から更新もできない）
+  ///
+  /// そこで「誰がフレンドか」だけをサブコレクションから取り、
+  /// 表示名は users/{相手} を購読して常に最新のものを使う。
+  /// 相手のドキュメントを読めなかった場合はコピーへフォールバックする。
   static Stream<List<FriendProfile>> watchFriends() {
     final uid = FirebaseAuthService.uid;
     if (uid == null) return Stream.value(const []);
-    return _users.doc(uid).collection('friends').snapshots().map((snap) {
+
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? friendsSub;
+    final nameSubs = <String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>{};
+
+    // サブコレクション側のコピー（フォールバック用）と、相手ドキュメントの最新値。
+    final copies = <String, FriendProfile>{};
+    final live = <String, FriendProfile>{};
+    var order = <String>[];
+
+    late final StreamController<List<FriendProfile>> controller;
+
+    void emit() {
+      if (controller.isClosed) return;
       final out = <FriendProfile>[];
-      for (final d in snap.docs) {
-        try {
-          out.add(FriendProfile.fromMap(d.id, d.data()));
-        } catch (_) {}
+      for (final id in order) {
+        final p = live[id] ?? copies[id];
+        if (p != null) out.add(p);
       }
-      return out;
-    });
+      controller.add(out);
+    }
+
+    void watchName(String friendUid) {
+      if (nameSubs.containsKey(friendUid)) return;
+      nameSubs[friendUid] = _users.doc(friendUid).snapshots().listen(
+        (doc) {
+          final data = doc.data();
+          if (data == null) return;
+          live[friendUid] = FriendProfile.fromMap(friendUid, data);
+          emit();
+        },
+        onError: (_) {
+          // 読めない場合はコピーのまま表示する
+        },
+      );
+    }
+
+    controller = StreamController<List<FriendProfile>>(
+      onListen: () {
+        friendsSub =
+            _users.doc(uid).collection('friends').snapshots().listen((snap) {
+          order = snap.docs.map((d) => d.id).toList();
+          copies
+            ..clear()
+            ..addEntries(snap.docs.map(
+              (d) => MapEntry(d.id, FriendProfile.fromMap(d.id, d.data())),
+            ));
+
+          // 削除されたフレンドの購読を止める
+          final removed =
+              nameSubs.keys.where((id) => !order.contains(id)).toList();
+          for (final id in removed) {
+            nameSubs.remove(id)?.cancel();
+            live.remove(id);
+          }
+          for (final id in order) {
+            watchName(id);
+          }
+          emit();
+        }, onError: controller.addError);
+      },
+      onCancel: () async {
+        await friendsSub?.cancel();
+        for (final s in nameSubs.values) {
+          await s.cancel();
+        }
+        nameSubs.clear();
+      },
+    );
+
+    return controller.stream;
   }
 
   static Future<FriendProfile> addFriendByCode(String code) async {

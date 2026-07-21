@@ -1,4 +1,4 @@
-import 'dart:math' show cos, pow;
+import 'dart:math' show cos, pow, sqrt;
 import 'dart:ui' as ui show Gradient;
 
 import 'package:flutter/foundation.dart';
@@ -91,14 +91,36 @@ class _PathFogPainter extends CustomPainter {
       tileMeters: FogTexture.tileMeters,
     );
 
+    // 地図が回転しているときは雲も一緒に回す。
+    // 回さないと、地図だけが回って雲が置き去りになり「貼り付いていない」
+    // 見え方になる（2本指のひねりで意図せず回っていることがある）。
+    final rotationRad = camera.rotation * _deg2rad;
+    final rotating = rotationRad.abs() > 1e-6;
+
+    canvas.save();
+    if (rotating) {
+      final c = bounds.center;
+      canvas.translate(c.dx, c.dy);
+      canvas.rotate(rotationRad);
+      canvas.translate(-c.dx, -c.dy);
+    }
+
+    // 回転させると四隅が空くので、対角線ぶん広げて塗る。
+    final paintRect = rotating
+        ? bounds.inflate(
+            sqrt(bounds.width * bounds.width + bounds.height * bounds.height) /
+                2)
+        : bounds;
+
     FogTexture.paintWorldTiles(
       canvas,
-      bounds,
+      paintRect,
       tileSizePx: placement.tileSizePx,
       offsetX: placement.offsetX,
       offsetY: placement.offsetY,
       fallbackColor: fogColor,
     );
+    canvas.restore();
   }
 
   @override

@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'battle_overlay.dart';
 import 'collage_gallery_screen.dart';
 import 'color_extraction.dart';
+import 'crossed_swords_icon.dart';
 import 'current_location_marker.dart';
 import 'path_fog_overlay.dart';
 import 'ghost_track.dart';
@@ -106,17 +107,17 @@ class _MapScreenState extends State<MapScreen> {
 
   /// 画面の端から端までが約 1.5km になるズームレベル。
   double get _defaultZoom => MapZoom.forSpan(
-        widthPx: _viewWidthPx,
-        latitude: _currentPosition.latitude,
-        spanMeters: kDefaultMapSpanMeters,
-      );
+    widthPx: _viewWidthPx,
+    latitude: _currentPosition.latitude,
+    spanMeters: kDefaultMapSpanMeters,
+  );
 
   /// 写真の場所へ飛ぶときのズーム（画面の端から端まで約 500m）。
   double get _closeUpZoom => MapZoom.forSpan(
-        widthPx: _viewWidthPx,
-        latitude: _currentPosition.latitude,
-        spanMeters: 500,
-      );
+    widthPx: _viewWidthPx,
+    latitude: _currentPosition.latitude,
+    spanMeters: 500,
+  );
 
   // 歴代の対戦で通った点（軌跡＋写真位置）。
   // ON/OFF 設定は廃止し、常に霧晴らしへ反映する。
@@ -262,8 +263,7 @@ class _MapScreenState extends State<MapScreen> {
   /// そのままでは載らない。色が未設定のものだけ抽出し、履歴へ書き戻して
   /// 次回以降は再計算しないようにする。
   Future<void> _ensureBattlePhotoColors() async {
-    final targets =
-        _battlePhotoPins.where((p) => p.colorIds.isEmpty).toList();
+    final targets = _battlePhotoPins.where((p) => p.colorIds.isEmpty).toList();
     if (targets.isEmpty) return;
 
     final computed = <String, List<int>>{};
@@ -317,24 +317,23 @@ class _MapScreenState extends State<MapScreen> {
 
   /// 地図にピン表示する写真（マップ／コラージュ ＋ 設定 ON なら対戦写真）。
   List<PhotoPin> get _pinsOnMap => [
-        ..._photoPins,
-        if (_showBattlePhotoPins) ..._battlePhotoPins,
-      ];
+    ..._photoPins,
+    if (_showBattlePhotoPins) ..._battlePhotoPins,
+  ];
 
   /// 現在のズームでの写真ピンの上限枚数。
   /// 縮小するほど枚数を絞り、地図がサムネイルで埋まらないようにする。
-  /// しきい値は既定ズーム（画面幅 1.5km ≒ zoom 15）を基準にしている。
   int get _photoPinLimit {
-    if (_currentZoom < 13.0) return 0; // 広域: 非表示
-    if (_currentZoom < 14.5) return 12;
+    if (_currentZoom < 14.0) return 0; // 広域（約 3km 超）: 非表示
+    if (_currentZoom < 15.0) return 12;
     if (_currentZoom < 16.0) return 40;
     return _pinsOnMap.length; // 既定〜拡大: 全件
   }
 
   /// 現在のズームでの写真ピンの直径。
   double get _photoPinSize {
-    if (_currentZoom < 13.0) return 24;
-    if (_currentZoom < 14.5) return 28;
+    if (_currentZoom < 14.0) return 24;
+    if (_currentZoom < 15.0) return 28;
     if (_currentZoom < 16.0) return 34;
     return 44;
   }
@@ -419,10 +418,7 @@ class _MapScreenState extends State<MapScreen> {
 
   /// マップモードで霧を晴らす点の一覧。
   /// 自分の散歩軌跡に加え、歴代の対戦の軌跡・写真位置も常に含める。
-  List<LatLng> get _mapFogPoints => [
-    ..._mapClearedPoints,
-    ..._battleFogPoints,
-  ];
+  List<LatLng> get _mapFogPoints => [..._mapClearedPoints, ..._battleFogPoints];
 
   /// マップモードの「散歩を記録する」。範囲ダイアログは出さず、すぐに記録
   /// （＝霧晴らし）を開始する。
@@ -1095,18 +1091,13 @@ class _MapScreenState extends State<MapScreen> {
             FloatingActionButton.small(
               onPressed: _toggleBattlePhotoPins,
               heroTag: 'battle_pin_toggle',
-              tooltip: _showBattlePhotoPins
-                  ? '対戦の写真を地図から隠す'
-                  : '対戦の写真を地図に表示する',
+              tooltip: _showBattlePhotoPins ? '対戦の写真を地図から隠す' : '対戦の写真を地図に表示する',
               backgroundColor: _showBattlePhotoPins
                   ? const Color(0xFFC62828)
                   : Colors.white,
-              foregroundColor:
-                  _showBattlePhotoPins ? Colors.white : Colors.black54,
-              child: Icon(
-                _showBattlePhotoPins
-                    ? Icons.sports_kabaddi
-                    : Icons.sports_kabaddi_outlined,
+              child: CrossedSwordsIcon(
+                size: 20,
+                color: _showBattlePhotoPins ? Colors.white : Colors.black54,
               ),
             ),
           if (_mode == MapMode.map) const SizedBox(height: 8),
