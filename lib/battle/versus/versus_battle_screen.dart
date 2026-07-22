@@ -1137,9 +1137,11 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
                       // ビームが丸からはみ出すぶん、マーカーを大きめに取る。
                       width: 46,
                       height: 46,
+                      // 画面に対して常に直立させる。地図回転に影響されず、
+                      // ビームは端末の方位だけを指す。
+                      rotate: true,
                       child: CurrentLocationMarker(
                         headingDegrees: _heading,
-                        mapRotationDegrees: _mapRotation,
                         dotSize: 13,
                       ),
                     ),

@@ -31,14 +31,16 @@ const _storiesLayouts = <int, List<List<double>>>{
     [0.00, 0.50, 0.50, 0.50],
     [0.50, 0.50, 0.50, 0.50],
   ],
-  // 5枚: 四隅に4枚、中央に1枚（中央が最前面に重なる）。
+  // 5枚: 四隅に4枚、中央に1枚（中央はひし形にくり抜いて最前面へ重ねる）。
   // ※ 中央の写真を一番上に重ねるため、リストの最後に置く。
+  //   中央スロットは 9:16 の中でほぼ正方形になる比率にして、
+  //   ひし形（対角線が縦横同じ）が崩れないようにしている。
   5: [
-    [0.00, 0.00, 0.50, 0.50], // 左上
-    [0.50, 0.00, 0.50, 0.50], // 右上
-    [0.00, 0.50, 0.50, 0.50], // 左下
-    [0.50, 0.50, 0.50, 0.50], // 右下
-    [0.28, 0.31, 0.44, 0.38], // 中央（最前面）
+    [0.00, 0.000, 0.50, 0.5000], // 左上
+    [0.50, 0.000, 0.50, 0.5000], // 右上
+    [0.00, 0.500, 0.50, 0.5000], // 左下
+    [0.50, 0.500, 0.50, 0.5000], // 右下
+    [0.20, 0.331, 0.60, 0.3375], // 中央（ひし形・最前面）
   ],
   6: [
     [0.00, 0.000, 0.50, 0.334],
@@ -168,20 +170,7 @@ class _StoriesCollageScreenState extends State<StoriesCollageScreen> {
         title: Text(widget.title),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            onPressed: _saving ? null : _save,
-            icon: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white),
-                  )
-                : const Icon(Icons.save_alt),
-            tooltip: '保存',
-          ),
-        ],
+        // 保存ボタンは画面下に一本化（AppBar のアイコンは廃止）。
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
@@ -242,14 +231,20 @@ class StoriesCollage extends StatelessWidget {
                 Builder(
                   builder: (_) {
                     final r = _slotToRect(slots[i], w, h);
+                    // 5枚のときの中央（最後のスロット）はひし形にくり抜く。
+                    final isDiamond = paths.length == 5 && i == 4;
+                    Widget image = paths[i].isNotEmpty
+                        ? Image.file(File(paths[i]), fit: BoxFit.cover)
+                        : ColoredBox(color: Colors.grey.shade900);
+                    if (isDiamond) {
+                      image = ClipPath(clipper: _DiamondClipper(), child: image);
+                    }
                     return Positioned(
                       left: r.left,
                       top: r.top,
                       width: r.width,
                       height: r.height,
-                      child: paths[i].isNotEmpty
-                          ? Image.file(File(paths[i]), fit: BoxFit.cover)
-                          : ColoredBox(color: Colors.grey.shade900),
+                      child: image,
                     );
                   },
                 ),
@@ -259,4 +254,21 @@ class StoriesCollage extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 画像をひし形（四辺の中点を結んだ菱形）にくり抜くクリッパー。
+/// スロットが正方形なら、アップロードされた見本のような菱形になる。
+class _DiamondClipper extends CustomClipper<Path> {
+  @override
+  Path getClip(Size size) {
+    return Path()
+      ..moveTo(size.width / 2, 0) // 上
+      ..lineTo(size.width, size.height / 2) // 右
+      ..lineTo(size.width / 2, size.height) // 下
+      ..lineTo(0, size.height / 2) // 左
+      ..close();
+  }
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
 }

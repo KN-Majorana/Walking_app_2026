@@ -354,11 +354,16 @@ class _ColorPhotosScreenState extends State<_ColorPhotosScreen> {
             imagePaths: selected.map((p) => p.imagePath).toList(),
             availablePins: selected,
             initialColorId: widget.colorId,
-            onFinish: (bytes) => _saveFinishedCollage(
+            // フォトモードの自由配置は「保存」1つに統一。
+            // 保存でカメラロール＋アプリ内「完成したコラージュ」一覧へ追記する。
+            showFinishButton: false,
+            onSaveToGallery: (bytes) => _saveFinishedCollage(
               bytes,
               colorId: widget.colorId,
               pins: selected,
               context: context,
+              saveToCameraRoll: false, // エディタ側で保存済み
+              showSnack: false, // 通知はエディタ側で表示
             ),
           ),
         ),
@@ -503,20 +508,7 @@ class _AutoStoriesCollageScreenState extends State<AutoStoriesCollageScreen> {
         title: const Text('自動配置'),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            onPressed: _saving ? null : _save,
-            icon: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white),
-                  )
-                : const Icon(Icons.save_alt),
-            tooltip: '保存',
-          ),
-        ],
+        // 保存ボタンは画面下に一本化（AppBar のアイコンは廃止）。
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
@@ -554,6 +546,10 @@ Future<void> _saveFinishedCollage(
   required int colorId,
   required List<PhotoPin> pins,
   required BuildContext context,
+  // 呼び出し側で既にカメラロール保存・通知を済ませている場合は false にする
+  // （自由配置エディタの「保存」からアプリ内一覧へ追記する用途）。
+  bool saveToCameraRoll = true,
+  bool showSnack = true,
 }) async {
   try {
     final now = DateTime.now();
@@ -570,23 +566,25 @@ Future<void> _saveFinishedCollage(
       ),
     );
 
-    final permission = await Permission.photos.request();
-    if (permission.isGranted || permission.isLimited) {
-      await ImageGallerySaver.saveImage(
-        pngBytes,
-        quality: 100,
-        name: 'collage_${now.millisecondsSinceEpoch}',
-        isReturnImagePathOfIOS: false,
-      );
+    if (saveToCameraRoll) {
+      final permission = await Permission.photos.request();
+      if (permission.isGranted || permission.isLimited) {
+        await ImageGallerySaver.saveImage(
+          pngBytes,
+          quality: 100,
+          name: 'collage_${now.millisecondsSinceEpoch}',
+          isReturnImagePathOfIOS: false,
+        );
+      }
     }
 
-    if (context.mounted) {
+    if (showSnack && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('コラージュ一覧とカメラロールに保存しました')),
       );
     }
   } catch (e) {
-    if (context.mounted) {
+    if (showSnack && context.mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('保存に失敗: $e')));
     }

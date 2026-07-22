@@ -1125,9 +1125,11 @@ class _MapScreenState extends State<MapScreen> {
                       // （ここを 13x13 にするとビームも 13px に潰れる）
                       width: 46,
                       height: 46,
+                      // 画面に対して常に直立させる。これで地図を回しても
+                      // ビームは端末の方位だけを指し、地図回転の影響を受けない。
+                      rotate: true,
                       child: CurrentLocationMarker(
                         headingDegrees: _heading,
-                        mapRotationDegrees: _mapRotation,
                         dotSize: 13,
                       ),
                     ),

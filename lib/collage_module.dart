@@ -808,12 +808,23 @@ class EditableCollagePage extends StatefulWidget {
   /// 保存・確定処理を行うコールバック。null の場合は「完成」ボタンを出さない。
   final Future<void> Function(Uint8List pngBytes)? onFinish;
 
+  /// 「保存」時に、合成画像をアプリ内の「完成したコラージュ」一覧へも
+  /// 追記するためのコールバック。null の場合はカメラロール保存のみ。
+  /// （カメラロール保存・通知はエディタ側で行うので、この中では不要）
+  final Future<void> Function(Uint8List pngBytes)? onSaveToGallery;
+
+  /// 「完成」ボタンを表示するか。フォトモードの自由配置では保存＝一覧追加
+  /// なので「完成」を出さず、保存ボタン1つに統一する。
+  final bool showFinishButton;
+
   const EditableCollagePage({
     super.key,
     required this.imagePaths,
     this.availablePins = const [],
     this.initialColorId,
     this.onFinish,
+    this.onSaveToGallery,
+    this.showFinishButton = true,
   });
 
   @override
@@ -1905,22 +1916,59 @@ class _EditableCollagePageState extends State<EditableCollagePage> {
       selectedIndex = -1;
     });
 
+    // 選択枠が消えた状態で再描画されるのを待つ
     await Future.delayed(const Duration(milliseconds: 80));
 
     if (!mounted) return;
 
-    await saveWidgetToGallery(
-      context: context,
-      repaintKey: captureKey,
-      fileNamePrefix: 'prikura_collage',
-    );
+    try {
+      final boundary =
+          captureKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
+      if (boundary == null) return;
+      final image = await boundary.toImage(pixelRatio: 2.5);
+      final byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+      final bytes = byteData.buffer.asUint8List();
 
-    if (!mounted) return;
+      // 1) カメラロールへ保存
+      await ImageGallerySaver.saveImage(
+        bytes,
+        quality: 100,
+        name: 'prikura_collage_${DateTime.now().millisecondsSinceEpoch}',
+      );
 
-    setState(() {
-      selectedIndex = oldSelectedIndex;
-      isSaving = false;
-    });
+      // 2) コールバックがあれば、アプリ内「完成したコラージュ」一覧へも追記
+      final onSaveToGallery = widget.onSaveToGallery;
+      if (onSaveToGallery != null) {
+        await onSaveToGallery(bytes);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              onSaveToGallery != null
+                  ? 'コラージュ一覧とカメラロールに保存しました'
+                  : 'コラージュを写真フォルダに保存しました',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('保存に失敗しました: $e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          selectedIndex = oldSelectedIndex;
+          isSaving = false;
+        });
+      }
+    }
   }
 
   Widget buildBackground() {
@@ -3010,20 +3058,20 @@ class _EditableCollagePageState extends State<EditableCollagePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
         title: const Text('プリクラ風コラージュ'),
         actions: [
-          if (widget.onFinish != null)
+          // 保存ボタンは画面下のFABに一本化。
+          // 「完成（確定）」は保存とは別の確定操作なので、必要な画面でのみ表示する。
+          if (widget.showFinishButton && widget.onFinish != null)
             TextButton.icon(
               onPressed: finishCollage,
               icon: const Icon(Icons.check_circle_outline),
               label: const Text('完成'),
             ),
-          IconButton(
-            onPressed: saveCollageWithoutSelection,
-            icon: const Icon(Icons.save_alt),
-            tooltip: '保存',
-          ),
         ],
       ),
       body: Stack(

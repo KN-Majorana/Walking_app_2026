@@ -7,21 +7,21 @@ import 'package:flutter/material.dart';
 /// [headingDegrees] を渡すと、Google Maps のように端末が向いている方向へ
 /// 扇形のビームを描く。null（向き不明）のときは丸だけを表示する。
 ///
-/// [mapRotationDegrees] は地図の回転角。地図を回した状態でも
-/// ビームが実際の方位を指すよう、方位に足し込んで描画する。
+/// ビームの向きは端末の方位（真北基準）だけで決まり、地図の回転には
+/// 影響されない。そのため呼び出し側の Marker は `rotate: true`（画面に
+/// 対して常に直立）にしておくこと。こうすると「端末が北を向いていれば、
+/// 地図をどう回してもビームは画面の上（＝北）を指す」挙動になる。
 ///
 /// ビームは与えられた領域いっぱいに広がるので、呼び出し側は
 /// 丸より大きめの Marker（46x46 程度）を用意すること。丸の大きさは
 /// [dotSize] で指定する。
 class CurrentLocationMarker extends StatelessWidget {
   final double? headingDegrees;
-  final double mapRotationDegrees;
   final double dotSize;
 
   const CurrentLocationMarker({
     super.key,
     this.headingDegrees,
-    this.mapRotationDegrees = 0,
     this.dotSize = 13,
   });
 
@@ -42,8 +42,9 @@ class CurrentLocationMarker extends StatelessWidget {
 
     if (headingDegrees == null) return Center(child: dot);
 
-    // 画面上での向き。地図が回っている分を足す。
-    final screenHeading = headingDegrees! + mapRotationDegrees;
+    // ビームの向きは端末の方位のみで決まる（地図回転は Marker(rotate: true)
+    // 側で打ち消されるので、ここでは足し込まない）。0 度＝画面の上＝北。
+    final screenHeading = headingDegrees!;
 
     return Stack(
       alignment: Alignment.center,
