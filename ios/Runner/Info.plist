@@ -5,7 +5,13 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>散歩中の現在地を地図に表示し、軌跡を記録するために使用します。</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>散歩中の現在地を地図に表示し、軌跡を記録するために使用します。</string>
+	<string>散歩の記録中や対戦中、アプリが背景にあるときも現在地を更新し、通過した場所の霧を晴らすために「常に許可」を使用します。</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>散歩の記録中や対戦中、アプリが背景にあるときも現在地を更新し、通過した場所の霧を晴らすために「常に許可」を使用します。</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>散歩中に写真を撮影して地図に記録するために使用します。</string>
 	<key>NSPhotoLibraryUsageDescription</key>

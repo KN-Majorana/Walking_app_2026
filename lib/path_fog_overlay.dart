@@ -73,6 +73,13 @@ class _PathFogPainter extends CustomPainter {
     required this.fullClearRadiusMeters,
   });
 
+  /// このズーム未満（＝ある程度縮小した広域表示）では、雲テクスチャを
+  /// やめてプレーンな灰色で塗る。細かい雲が潰れて見づらくなるのを防ぐ。
+  static const double _plainGrayBelowZoom = 14.0;
+
+  /// 広域表示時のプレーンな霧の色（標準グレー）。
+  static const Color _plainGrayColor = Color(0xFF9E9E9E);
+
   /// Web メルカトルでの「1ピクセルあたりのメートル」。タイルサイズ 256 前提。
   double _metersPerPixel(double latitude) {
     return 156543.03392 * cos(latitude * _deg2rad) / pow(2, camera.zoom);
@@ -84,6 +91,12 @@ class _PathFogPainter extends CustomPainter {
   /// 画面中心の近くにある格子点を基準にタイルを並べる（[FogTiling] を参照）。
   /// これにより、拡大縮小でも移動でも雲が地図に貼り付いたまま滑らかに動く。
   void _paintFogTexture(Canvas canvas, Rect bounds) {
+    // ある程度縮小したら、雲テクスチャではなくプレーンな灰色で塗る。
+    if (camera.zoom < _plainGrayBelowZoom) {
+      canvas.drawRect(bounds, Paint()..color = _plainGrayColor);
+      return;
+    }
+
     final placement = FogTiling.compute(
       zoom: camera.zoom,
       center: camera.center,

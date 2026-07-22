@@ -57,6 +57,8 @@ class _MapScreenState extends State<MapScreen> {
   // 記録状態
   WalkTrack? _currentTrack;
   StreamSubscription<Position>? _positionSub;
+  // 現在の位置ストリームが背景取得モードで動いているか（案A: 記録中のみ）。
+  bool _streamBackground = false;
   Timer? _elapsedTimer;
   Duration _elapsed = Duration.zero;
 
@@ -170,13 +172,21 @@ class _MapScreenState extends State<MapScreen> {
   /// リアルタイムに更新される（対戦画面と同じ挙動）。
   void _ensureLocationStream() {
     final shouldRun = _mode == MapMode.map || _isRecording;
-    if (shouldRun && _positionSub == null) {
-      _positionSub = LocationService.watchPositionRaw().listen(
-        _onPositionUpdate,
-      );
-    } else if (!shouldRun && _positionSub != null) {
+    // 案A: 記録中だけ背景取得を有効化する（停止中は前面のみ＝電池に優しい）。
+    final wantBackground = _isRecording;
+    if (shouldRun) {
+      // 未購読、または背景モードの要否が変わったら購読し直す。
+      if (_positionSub == null || _streamBackground != wantBackground) {
+        _positionSub?.cancel();
+        _streamBackground = wantBackground;
+        _positionSub =
+            LocationService.watchPositionRaw(background: wantBackground)
+                .listen(_onPositionUpdate);
+      }
+    } else if (_positionSub != null) {
       _positionSub!.cancel();
       _positionSub = null;
+      _streamBackground = false;
     }
   }
 
