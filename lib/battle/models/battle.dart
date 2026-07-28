@@ -105,6 +105,18 @@ class Battle {
   final int? challengerColorId;
   final int? opponentColorId;
 
+  /// 【デモ専用】再生速度の倍率。Opponent 端末が変更し、Challenger 端末へ
+  /// firebase 経由で同期される。null の場合は既定値を使う。
+  final double? demoSpeed;
+
+  /// 【デモ専用】各プレイヤーが停止地点で立ち止まっているか。
+  /// どちらかが停止中は再生速度を変更できないようにするために共有する。
+  final bool? challengerPaused;
+  final bool? opponentPaused;
+
+  /// 【デモ】どちらかのプレイヤーが立ち止まっているか。
+  bool get anyPaused => (challengerPaused ?? false) || (opponentPaused ?? false);
+
   /// 強制終了リクエスト
   final String? forceEndRequestBy;
   final DateTime? forceEndRequestAt;
@@ -135,6 +147,9 @@ class Battle {
     this.timeLimitSec = 3600,
     this.challengerColorId,
     this.opponentColorId,
+    this.demoSpeed,
+    this.challengerPaused,
+    this.opponentPaused,
     this.forceEndRequestBy,
     this.forceEndRequestAt,
     this.resultCloseRequestBy,
@@ -205,6 +220,9 @@ class Battle {
     DateTime? endedAt,
     int? challengerColorId,
     int? opponentColorId,
+    double? demoSpeed,
+    bool? challengerPaused,
+    bool? opponentPaused,
     String? forceEndRequestBy,
     DateTime? forceEndRequestAt,
     String? resultCloseRequestBy,
@@ -229,6 +247,9 @@ class Battle {
       timeLimitSec: timeLimitSec ?? this.timeLimitSec,
       challengerColorId: challengerColorId ?? this.challengerColorId,
       opponentColorId: opponentColorId ?? this.opponentColorId,
+      demoSpeed: demoSpeed ?? this.demoSpeed,
+      challengerPaused: challengerPaused ?? this.challengerPaused,
+      opponentPaused: opponentPaused ?? this.opponentPaused,
       forceEndRequestBy: forceEndRequestBy ?? this.forceEndRequestBy,
       forceEndRequestAt: forceEndRequestAt ?? this.forceEndRequestAt,
       resultCloseRequestBy: resultCloseRequestBy ?? this.resultCloseRequestBy,
@@ -252,6 +273,9 @@ class Battle {
         'timeLimitSec': timeLimitSec,
         if (challengerColorId != null) 'challengerColorId': challengerColorId,
         if (opponentColorId != null) 'opponentColorId': opponentColorId,
+        if (demoSpeed != null) 'demoSpeed': demoSpeed,
+        if (challengerPaused != null) 'challengerPaused': challengerPaused,
+        if (opponentPaused != null) 'opponentPaused': opponentPaused,
         if (forceEndRequestBy != null) 'forceEndRequestBy': forceEndRequestBy,
         if (forceEndRequestAt != null)
           'forceEndRequestAt': forceEndRequestAt!.millisecondsSinceEpoch,
@@ -293,6 +317,9 @@ class Battle {
       timeLimitSec: (map['timeLimitSec'] as num?)?.toInt() ?? 3600,
       challengerColorId: (map['challengerColorId'] as num?)?.toInt(),
       opponentColorId: (map['opponentColorId'] as num?)?.toInt(),
+      demoSpeed: (map['demoSpeed'] as num?)?.toDouble(),
+      challengerPaused: map['challengerPaused'] as bool?,
+      opponentPaused: map['opponentPaused'] as bool?,
       forceEndRequestBy: map['forceEndRequestBy'] as String?,
       forceEndRequestAt: _toDate(map['forceEndRequestAt']),
       resultCloseRequestBy: map['resultCloseRequestBy'] as String?,

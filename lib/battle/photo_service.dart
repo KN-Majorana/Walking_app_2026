@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -53,6 +54,27 @@ class PhotoService {
     final destPath = p.join(dir.path, fileName);
     await File(xFile.path).copy(destPath);
     return destPath;
+  }
+
+  /// 【デモ】アセット画像（assets/demo_photos/*.png）を battle 用ディレクトリへ
+  /// 実ファイルとして書き出し、そのパスを返す。実カメラで撮影した写真の代わりに
+  /// 使う（以降の処理は通常の撮影写真と全く同じパイプラインを通る）。
+  static Future<String?> saveAssetAsBattlePhoto(
+      String battleId, String assetPath) async {
+    try {
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List();
+      final dir = await _dirForBattle(battleId);
+      final ext = p.extension(assetPath).isNotEmpty
+          ? p.extension(assetPath)
+          : '.png';
+      final fileName = 'photo_${DateTime.now().millisecondsSinceEpoch}$ext';
+      final destPath = p.join(dir.path, fileName);
+      await File(destPath).writeAsBytes(bytes, flush: true);
+      return destPath;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 色不一致などで捨てる写真ファイルを削除する。

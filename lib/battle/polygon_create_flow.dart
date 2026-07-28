@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../color_extraction.dart';
-import 'location_service.dart';
+import 'demo_camera_screen.dart';
 import 'models/polygon.dart';
 import 'photo_service.dart';
 import 'services/exif_service.dart';
@@ -81,11 +81,23 @@ class PolygonCreateFlow {
     DateTime takenAt = DateTime.now();
     bool usedFallback = false;
 
+    // 【デモ】偽カメラ（指定画像）で撮影したかどうか。色判定の扱いを分岐する。
+    bool fakeCamera = false;
     if (source == PhotoSource.camera) {
-      try {
-        position = await LocationService.getCurrentPosition();
-      } catch (_) {}
-      path = await PhotoService.takeAndSavePhotoForBattle(battleId);
+      fakeCamera = true;
+      // 位置はスクリプト再生された現在地（呼び出し側から渡された currentPosition）。
+      position = currentPosition;
+      if (!context.mounted) return null;
+      // 実カメラは起動せず、demo_photos の画像を映す偽カメラ画面を開く。
+      path = await Navigator.of(context).push<String>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => DemoCameraScreen(
+            battleId: battleId,
+            colorId: assignedColorId,
+          ),
+        ),
+      );
       if (path == null) return null;
     } else {
       path = await PhotoService.pickFromGalleryAndSaveForBattle(battleId);
@@ -105,7 +117,11 @@ class PolygonCreateFlow {
     }
 
     // ── ステップ D（内部処理）：色判定 ──
-    final colorIds = await extractColorIdsFromPath(path, palette: colorPaletteBattle);
+    //   【デモ】偽カメラ（指定画像）のときは色判定を通さず、割当色に一致させる。
+    //   これで「色が一致しないため追加できません」で弾かれず、確実にピンが刺さる。
+    final colorIds = fakeCamera
+        ? <int>[assignedColorId]
+        : await extractColorIdsFromPath(path, palette: colorPaletteBattle);
 
     return PolygonCreateResult(
       kind: method == PolygonCreateMethod.createNew

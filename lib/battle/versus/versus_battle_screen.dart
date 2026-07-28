@@ -26,7 +26,9 @@ import '../../color_extraction.dart';
 import '../../current_location_marker.dart';
 import '../../compass_service.dart';
 import '../../map_compass.dart';
-import '../location_service.dart';
+// 【デモ】実 GPS の代わりにプリセット経路を自動再生するため demo_config/engine を使う。
+import '../../demo/demo_config.dart';
+import '../../demo/demo_engine.dart';
 import '../models/battle.dart';
 import '../models/polygon.dart';
 import '../opponent_location_marker.dart';
@@ -139,7 +141,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   /// 位置情報を Firestore へ上げる周期タイマー（既定 30 秒）。
   Timer? _locUploadTimer;
-  static const Duration _locUploadInterval = Duration(seconds: 30);
+  // 【デモ】自動再生位置を相手端末へ滑らかに共有するため周期を短くする。
+  static const Duration _locUploadInterval = Duration(seconds: 1);
 
   bool _forceEndDialogOpen = false;
 
@@ -149,6 +152,47 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   /// 減算リアクティブ処理の再入ガード（ストリーム連鎖による多重実行防止）。
   bool _reevaluating = false;
+
+  // ─────────────────────────────────────────
+  // 【デモ】スクリプト自動再生（実 GPS の代替）
+  // ─────────────────────────────────────────
+  /// 自動再生ドライバを開始済みか（battle 取得後に 1 度だけ開始）。
+  bool _demoStarted = false;
+
+  /// 自分が Opponent 側（赤）か。Challenger 側（青）なら false。
+  bool _isOpponent = false;
+
+  /// 自分が辿るプリセット経路と各到達秒（DemoConfig）。
+  List<LatLng> _demoRoute = const [];
+  List<double> _demoArrivals = const [];
+
+  /// 対戦開始からのデモ経過秒。
+  double _demoElapsed = 0;
+
+  /// 再生速度倍率。Opponent 端末が変更し、firebase 経由で Challenger へ同期する。
+  double _demoSpeed = 4;
+  static const List<double> _demoSpeedChoices = [1, 4, 16, 60];
+
+  /// 再生速度パネルの表示（画面ダブルタップでトグル、Opponent 端末のみ）。
+  bool _speedPanelVisible = false;
+
+  Timer? _demoTicker;
+  static const Duration _demoTickInterval = Duration(milliseconds: 50);
+
+  /// デモの制限時間（秒）。15 分。
+  static const double _demoLimitSec = 900;
+
+  /// デモ終了処理（active→ended 遷移）を 1 度だけ走らせるためのフラグ。
+  bool _demoEnded = false;
+
+  /// 【デモ】立ち止まる地点の到達時刻（デモ秒）。停止地点インデックス→arrivals。
+  List<double> _stopTimes = const [];
+
+  /// 次に判定する停止地点の番号（0..stops）。到達→ピンで 1 つ進む。
+  int _nextStopIndex = 0;
+
+  /// 停止地点で立ち止まり中か（自動再生を凍結し、ピン設置で再開）。
+  bool _pausedAtStop = false;
 
   @override
   void initState() {
@@ -176,6 +220,7 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     _posSub?.cancel();
     _tick?.cancel();
     _locUploadTimer?.cancel();
+    _demoTicker?.cancel();
     super.dispose();
   }
 
@@ -274,39 +319,18 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     // 自分の地図（霧）を先に用意する。
     await _loadFogPoints();
 
-    // ── 現在地のリアルタイム追従（背景取得対応）──
-    //   位置ストリームを購読し、移動に応じて現在地マーカーを更新する。
-    //   初回のみ地図を現在地へ寄せ、以降はユーザ操作を尊重する。
-    try {
-      _currentPosition = await LocationService.getCurrentPosition();
-      _hasLocation = true;
-      // 対戦中は記録開始の有無に関わらず、通過地点の霧を無条件で晴らす。
-      _clearFogAt(_currentPosition);
-      if (mounted) setState(() {});
-      _mapController.move(_currentPosition, _defaultZoom);
-      _centeredOnce = true;
-      // 起動直後に1度アップロード（相手側にすぐ表示させるため）。
-      _uploadMyLocation();
-    } catch (_) {}
+    // ── 【デモ】実 GPS は使わず、プリセット経路の自動再生で現在地を進める ──
+    //   実際の再生開始は battle 取得後（_onBattle → _startDemoDriver）に行う。
+    //   ここでは地図の初期中心をスタート地点へ寄せておくだけ。
+    _currentPosition = DemoConfig.start;
+    if (mounted) setState(() {});
 
-    _posSub = LocationService.watchPosition().listen((pos) {
-      if (!mounted) return;
-      // 対戦中は無条件に、通過した場所の霧を晴らす。
-      _clearFogAt(pos);
-      setState(() {
-        _currentPosition = pos;
-        _hasLocation = true;
-      });
-      // 対戦中の移動軌跡を蓄積（歴代データ用）。
-      _myTrail.add(pos);
-      if (!_centeredOnce) {
-        _mapController.move(_currentPosition, _defaultZoom);
-        _centeredOnce = true;
-      }
-    });
-
-    // ── 位置情報を一定間隔で Firestore へアップロード ──
+    // ── 位置情報を一定間隔で Firestore へアップロード（相手端末へ共有）──
+    //   自動再生された自分の位置を短い周期でアップロードし、相手端末の地図に
+    //   相手（自分）の現在地マーカーが滑らかに動くようにする。
     _locUploadTimer = Timer.periodic(_locUploadInterval, (_) {
+      if (!_hasLocation) return;
+      _myTrail.add(_currentPosition);
       _uploadMyLocation();
       _flushTrail();
     });
@@ -387,6 +411,111 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
 
   }
 
+  /// 【デモ】battle を取得できたら、自分側のプリセット経路の自動再生を開始する。
+  /// challenger（青）は challengerRoute、opponent（赤）は opponentRoute を辿る。
+  void _startDemoDriver() {
+    if (_demoStarted) return;
+    final me = _myUid;
+    final b = _battle;
+    if (me == null || b == null) return;
+    _demoStarted = true;
+
+    _isOpponent = (me == b.opponentUid);
+    _demoRoute = _isOpponent
+        ? List<LatLng>.from(DemoConfig.opponentRoute)
+        : List<LatLng>.from(DemoConfig.challengerRoute);
+    _demoArrivals = _isOpponent
+        ? List<double>.from(DemoConfig.opponentArrivalSec)
+        : List<double>.from(DemoConfig.challengerArrivalSec);
+
+    // 立ち止まる地点（経路インデックス）を到達時刻へ変換して昇順に並べる。
+    final stopIdx = _isOpponent
+        ? DemoConfig.opponentStopIndices
+        : DemoConfig.challengerStopIndices;
+    _stopTimes = stopIdx
+        .where((i) => i >= 0 && i < _demoArrivals.length)
+        .map((i) => _demoArrivals[i])
+        .toList()
+      ..sort();
+    _nextStopIndex = 0;
+    _pausedAtStop = false;
+
+    _currentPosition = DemoConfig.start;
+    _hasLocation = true;
+    _clearFogAt(_currentPosition);
+    if (!_centeredOnce) {
+      _mapController.move(_currentPosition, _defaultZoom);
+      _centeredOnce = true;
+    }
+    _uploadMyLocation();
+
+    _demoTicker?.cancel();
+    _demoTicker = Timer.periodic(_demoTickInterval, _onDemoTick);
+    if (mounted) setState(() {});
+  }
+
+  /// 【デモ】経過秒を再生速度ぶん進め、プリセット経路上の現在地を更新する。
+  void _onDemoTick(Timer _) {
+    if (!mounted || _demoEnded) return;
+    // 立ち止まり中は自動再生を凍結する（手動でピンを刺すと再開）。
+    if (_pausedAtStop) return;
+
+    final next =
+        _demoElapsed + _demoTickInterval.inMilliseconds / 1000.0 * _demoSpeed;
+
+    // 次の停止地点に到達したら、その地点でちょうど止まって立ち止まる。
+    if (_nextStopIndex < _stopTimes.length &&
+        next >= _stopTimes[_nextStopIndex]) {
+      _demoElapsed = _stopTimes[_nextStopIndex];
+      _pausedAtStop = true;
+      // 停止したことを相手端末へ共有（停止中は再生速度を変更できないようにする）。
+      _publishPaused(true);
+    } else {
+      _demoElapsed = next;
+    }
+
+    final pos = DemoEngine.positionOf(
+      route: _demoRoute,
+      arrivals: _demoArrivals,
+      t: _demoElapsed,
+    );
+    _currentPosition = pos;
+    // 対戦中は通過した場所の霧を無条件で晴らす。
+    _clearFogAt(pos);
+    setState(() => _hasLocation = true);
+
+    // 制限時間（デモ経過秒）に達したら active→ended へ（冪等）。
+    if (_demoElapsed >= _demoLimitSec && !_demoEnded) {
+      _demoEnded = true;
+      BattleService.endByDemoTime(widget.battleId);
+    }
+  }
+
+  /// 【デモ】立ち止まり中に自分のピンが刺さったら、その停止地点を消化して再び歩き出す。
+  /// _createNewFlow / _addExistingFlow でローカルにピンを追加した直後に呼ぶ。
+  void _resumeFromStopIfPaused() {
+    if (!_pausedAtStop) return;
+    _pausedAtStop = false;
+    _nextStopIndex++;
+    // 直後の tick で同じ地点を再判定しないよう、僅かに時間を進めておく。
+    _demoElapsed += 0.001;
+    // 再開したことを相手端末へ共有する。
+    _publishPaused(false);
+    if (mounted) setState(() {});
+  }
+
+  /// 【デモ】自分の停止状態を firebase の battle ドキュメントへ共有する。
+  void _publishPaused(bool paused) {
+    final b = _battle;
+    final me = _myUid;
+    if (b == null || me == null) return;
+    BattleService.setPaused(
+      widget.battleId,
+      isChallenger: me == b.challengerUid,
+      paused: paused,
+    );
+  }
+
   /// 起動時に、既にローカルへ保存されている写真ピンを読み込む。
   /// Firestore の購読を開始する前に必ず完了させること。
   Future<void> _loadLocalMirror() async {
@@ -426,6 +555,16 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       return;
     }
     setState(() => _battle = b);
+
+    // 【デモ】再生速度の同期：Opponent が変更した値を Challenger 端末が受け取る。
+    if (b.demoSpeed != null && b.demoSpeed != _demoSpeed) {
+      setState(() => _demoSpeed = b.demoSpeed!);
+    }
+    // 【デモ】battle（active）を取得できたら自動再生ドライバを開始（1 度だけ）。
+    if (!_demoStarted && b.status == BattleStatus.active) {
+      _startDemoDriver();
+    }
+
     // 自分が出した強制終了リクエストが解決した（相手が承認/拒否した、または
     // リクエストが消えた）ら、申請側の「相手に確認中…」ダイアログを閉じる。
     if (_forceEndWaitingOpen && b.forceEndRequestBy != _myUid) {
@@ -659,6 +798,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       _photoPins.add(pin);
     });
     await _saveLocalMirror();
+    // 【デモ】立ち止まり中なら、この地点でピンが刺さったので再び歩き出す。
+    _resumeFromStopIfPaused();
 
     final pendingCount = _photoPins
         .where((p) =>
@@ -811,6 +952,8 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
       if (i >= 0) _polygons[i] = updated;
     });
     await _saveLocalMirror();
+    // 【デモ】立ち止まり中なら、この地点でピンが刺さったので再び歩き出す。
+    _resumeFromStopIfPaused();
 
     await FirestoreSyncService.upsertBattlePolygon(widget.battleId, updated);
     await FirestoreSyncService.upsertBattlePhoto(widget.battleId, pin);
@@ -1012,6 +1155,21 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     return '$m:$s';
   }
 
+  /// 【デモ】再生速度パネルの表示切替（Opponent 端末のダブルタップから呼ばれる）。
+  void _toggleSpeedPanel() {
+    if (!_isOpponent) return;
+    setState(() => _speedPanelVisible = !_speedPanelVisible);
+  }
+
+  /// 【デモ】再生速度の変更（Opponent 端末のみ）。ローカルへ即時反映しつつ、
+  /// firebase の battle ドキュメントへ書き込み、Challenger 端末へ同期する。
+  void _onChangeSpeed(double v) {
+    // 自分または相手が立ち止まっている間は変更を受け付けない。
+    if (_pausedAtStop || (_battle?.anyPaused ?? false)) return;
+    setState(() => _demoSpeed = v);
+    BattleService.setDemoSpeed(widget.battleId, v);
+  }
+
   @override
   Widget build(BuildContext context) {
     // 既定ズーム計算のため、現在の画面幅を控えておく。
@@ -1030,16 +1188,15 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     // 相手の最新位置（対戦中のみ表示）
     final oppLoc = b.status == BattleStatus.active ? b.oppLocation(myUid) : null;
 
-    // 残り時間
-    final ends = b.endsAt;
-    final remaining = ends == null
-        ? Duration.zero
-        : ends.difference(DateTime.now());
-    final displayRemain =
-        remaining.isNegative ? Duration.zero : remaining;
+    // 残り時間（【デモ】実時間の endsAt ではなく、再生速度を反映したデモ経過秒で表示）
+    final remainSec = (_demoLimitSec - _demoElapsed).clamp(0.0, _demoLimitSec);
+    final displayRemain = Duration(seconds: remainSec.round());
 
     // ── 自分のピンのみ表示（★相手のピンは表示しない） ──
     final myPins = _photoPins.where((p) => p.ownerUid == myUid).toList();
+
+    // 【デモ】自分または相手が立ち止まっている間は再生速度を変更できない。
+    final speedLocked = _pausedAtStop || b.anyPaused;
 
     // モード切替バーが無い（マップからのオーバーレイ表示）ときは、
     // バー用に空けていた上部余白を詰める。
@@ -1049,7 +1206,11 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          FlutterMap(
+          GestureDetector(
+            behavior: HitTestBehavior.deferToChild,
+            // 【デモ】画面ダブルタップで再生速度パネルを開閉（Opponent 端末のみ）。
+            onDoubleTap: _isOpponent ? _toggleSpeedPanel : null,
+            child: FlutterMap(
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _currentPosition,
@@ -1057,6 +1218,13 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
               initialZoom: _defaultZoom,
               minZoom: 3,
               maxZoom: 19,
+              // 【デモ】ダブルタップは速度パネル用に使うため、地図側の
+              //   ダブルタップズームは無効化する。
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.all &
+                    ~InteractiveFlag.doubleTapZoom &
+                    ~InteractiveFlag.doubleTapDragZoom,
+              ),
               // 地図の回転をコンパスと現在地ビームへ反映する。
               onPositionChanged: (camera, hasGesture) {
                 if ((camera.rotation - _mapRotation).abs() < 0.5) return;
@@ -1148,7 +1316,62 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
                   ],
                 ),
             ],
+            ),
           ),
+
+          // 【デモ】再生速度パネル（Opponent 端末で画面ダブルタップ時のみ表示）。
+          //   Opponent が速度を変えると firebase 経由で Challenger 端末へ同期する。
+          if (_isOpponent && _speedPanelVisible)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Center(
+                    child: _SpeedControl(
+                      speed: _demoSpeed,
+                      choices: _demoSpeedChoices,
+                      onChanged: _onChangeSpeed,
+                      enabled: !speedLocked,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // 【デモ】立ち止まり中のヒント（ピンを刺すと再開）。
+          if (_pausedAtStop)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 96,
+              child: IgnorePointer(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.72),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.pause_circle_filled,
+                            color: Colors.white, size: 18),
+                        SizedBox(width: 8),
+                        Text('立ち止まりました — ピンを刺すと再開します',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // 左上：色バッジ（モード切替バーの下に来るよう上部を空ける）
           Positioned(
@@ -1304,6 +1527,86 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
             child: const Icon(Icons.brush),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 【デモ】再生速度を選ぶ小さなパネル（Opponent 端末のダブルタップで表示）。
+class _SpeedControl extends StatelessWidget {
+  final double speed;
+  final List<double> choices;
+  final ValueChanged<double> onChanged;
+
+  /// false のときは操作不可（立ち止まり中）。ボタンを薄くして「停止中」を表示。
+  final bool enabled;
+
+  const _SpeedControl({
+    required this.speed,
+    required this.choices,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.5,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: const [
+            BoxShadow(
+                color: Colors.black26, blurRadius: 4, offset: Offset(0, 2)),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(left: 4, right: 2),
+              child: Icon(Icons.speed, size: 18),
+            ),
+            for (final c in choices)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: GestureDetector(
+                  onTap: enabled ? () => onChanged(c) : null,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: speed == c
+                          ? Theme.of(context).colorScheme.primary
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '×${c.toInt()}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: speed == c ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            if (!enabled)
+              const Padding(
+                padding: EdgeInsets.only(left: 6, right: 4),
+                child: Text(
+                  '停止中',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black54,
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

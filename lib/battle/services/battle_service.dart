@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import '../../color_extraction.dart';
 import '../models/battle.dart';
 import 'firebase_auth_service.dart';
 
@@ -122,6 +120,9 @@ class BattleService {
     required String opponentName,
     int timeLimitSec = 3600,
   }) async {
+    // 【デモ】ロビーでどの制限時間を選んでも、実際は必ず 15 分（900 秒）で開始する。
+    //   ドロップダウンの選択肢は見た目のためだけに残している。
+    timeLimitSec = 900;
     if (challengerUid == opponentUid) {
       throw '自分自身には対戦を申し込めません';
     }
@@ -159,9 +160,9 @@ class BattleService {
   }
 
   /// B が「対決する」を押して active へ遷移する。
-  /// 色は colorPaletteBattle からランダムで 2 色を割り当てる（互いに異なる）。
+  /// 【デモ】色は固定：申込側(Challenger)=青(colorPaletteBattle の 6)、
+  ///   申込された側(Opponent)=赤(colorPaletteBattle の 0)。
   static Future<Battle> acceptChallenge(String battleId) async {
-    final rnd = Random.secure();
     return _db.runTransaction<Battle>((tx) async {
       final ref = _battles.doc(battleId);
       final snap = await tx.get(ref);
@@ -174,12 +175,9 @@ class BattleService {
         throw '対戦の応答期限が切れました';
       }
 
-      final palette = colorPaletteBattle.length;
-      int a = rnd.nextInt(palette);
-      int c = rnd.nextInt(palette);
-      while (c == a) {
-        c = rnd.nextInt(palette);
-      }
+      // 【デモ】固定色：Challenger=青(6) / Opponent=赤(0)
+      const int a = 6; // Blue
+      const int c = 0; // Red
 
       final now = DateTime.now();
       final endsAt = now.add(Duration(seconds: b.timeLimitSec));
@@ -199,6 +197,53 @@ class BattleService {
       });
       return updated;
     });
+  }
+
+  /// 【デモ】再生速度を battle ドキュメントへ書き込む（Opponent 端末のみ呼ぶ）。
+  ///   merge:true で他フィールドを保持しつつ demoSpeed だけ更新する。
+  ///   Challenger 端末は watchBattle 経由でこの値を受け取り同期する。
+  static Future<void> setDemoSpeed(String battleId, double speed) async {
+    try {
+      await _battles.doc(battleId).set(
+        {'demoSpeed': speed},
+        SetOptions(merge: true),
+      );
+    } catch (_) {}
+  }
+
+  /// 【デモ】自分が停止地点で立ち止まっているかを battle ドキュメントへ共有する。
+  ///   相手端末は、どちらかが停止中なら再生速度を変更できないようにするために参照する。
+  static Future<void> setPaused(
+    String battleId, {
+    required bool isChallenger,
+    required bool paused,
+  }) async {
+    final field = isChallenger ? 'challengerPaused' : 'opponentPaused';
+    try {
+      await _battles.doc(battleId).set(
+        {field: paused},
+        SetOptions(merge: true),
+      );
+    } catch (_) {}
+  }
+
+  /// 【デモ】スクリプト再生の経過が制限時間に達したとき、active → ended へ。
+  ///   実時間の endsAt ではなくデモの経過秒で終了させるための冪等遷移。
+  static Future<void> endByDemoTime(String battleId) async {
+    try {
+      await _db.runTransaction((tx) async {
+        final ref = _battles.doc(battleId);
+        final snap = await tx.get(ref);
+        if (!snap.exists) return;
+        final b = Battle.fromMap(snap.id, snap.data()!);
+        if (b.status != BattleStatus.active) return;
+        tx.update(ref, {
+          'status': BattleStatus.ended.code,
+          'endedAt': DateTime.now().millisecondsSinceEpoch,
+          'endedBy': 'timeout',
+        });
+      });
+    } catch (_) {}
   }
 
   /// B が「対決しない」を選ぶ → declined。
