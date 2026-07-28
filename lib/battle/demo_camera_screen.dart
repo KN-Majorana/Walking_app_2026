@@ -35,6 +35,7 @@ class DemoCameraScreen extends StatefulWidget {
     'assets/demo_photos/red_1.png',
     'assets/demo_photos/red_2.png',
     'assets/demo_photos/red_3.png',
+    'assets/demo_photos/red_4.png',
   ];
 
   /// 撮影ごとに順番に切り替えるためのカウンタ（色ごと）。
