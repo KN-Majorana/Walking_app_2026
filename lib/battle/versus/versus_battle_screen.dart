@@ -236,12 +236,9 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     setState(() => _mapRotation = 0);
   }
 
-  /// 対戦中に晴らした霧を、マップモードと同じストレージへ永続化する。
-  /// 対戦終了後もマップモードの地図に恒久的に反映される。
+  /// 【デモ】霧は対戦ごとにリセットするため永続化しない（保存は行わない）。
   void _saveFogPoints() {
-    if (_fogClearedPoints.length == _fogSavedCount) return;
-    _fogSavedCount = _fogClearedPoints.length;
-    MapFogStorageService.saveAll(List.of(_fogClearedPoints));
+    // no-op（対戦中に晴らした霧は次の対戦へ持ち越さない）。
   }
 
   /// 現在地を「霧を晴らした地点」として取り込む。
@@ -290,26 +287,17 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     }
   }
 
-  /// マップモードの霧データを読み込む。対戦中もプレイヤー自身の地図
-  /// （散歩で晴らした場所＋歴代の対戦で通った場所）をそのまま使う。
+  /// 【デモ】対戦ごとに霧をリセットする。
+  ///   保存済み・歴代の消去点は読み込まず、毎回まっさらな霧（全面が雲）から始め、
+  ///   歩いた所だけが晴れる。併せて永続ストレージも空にして、前回の晴れが
+  ///   次の対戦へ持ち越されないようにする。
   Future<void> _loadFogPoints() async {
-    List<LatLng> saved = const [];
-    List<LatLng> battleHistory = const [];
+    _fogClearedPoints.clear();
+    _fogHistoryPoints.clear();
+    _fogSavedCount = 0;
     try {
-      saved = await MapFogStorageService.loadAll();
+      await MapFogStorageService.saveAll(const <LatLng>[]);
     } catch (_) {}
-    try {
-      // 歴代の対戦の軌跡・写真位置は常に霧晴らしへ反映する（設定は廃止）。
-      battleHistory = await BattlePhotoHistoryService.loadFogPoints();
-    } catch (_) {}
-    _fogClearedPoints
-      ..clear()
-      ..addAll(saved);
-    _fogHistoryPoints
-      ..clear()
-      ..addAll(battleHistory);
-    // 読み込んだ時点の点数を「保存済み」として扱う（無変更なら書き戻さない）。
-    _fogSavedCount = _fogClearedPoints.length;
     if (mounted) setState(() {});
   }
 
@@ -415,9 +403,10 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
   /// challenger（青）は challengerRoute、opponent（赤）は opponentRoute を辿る。
   void _startDemoDriver() {
     if (_demoStarted) return;
-    final me = _myUid;
+    final me = _myUid ?? FirebaseAuthService.uid;
     final b = _battle;
     if (me == null || b == null) return;
+    _myUid = me;
     _demoStarted = true;
 
     _isOpponent = (me == b.opponentUid);
@@ -443,14 +432,23 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
     _currentPosition = DemoConfig.start;
     _hasLocation = true;
     _clearFogAt(_currentPosition);
-    if (!_centeredOnce) {
-      _mapController.move(_currentPosition, _defaultZoom);
-      _centeredOnce = true;
-    }
     _uploadMyLocation();
 
+    // 自動再生タイマーを先に開始する。地図初期化の成否に関わらず必ず動かす。
     _demoTicker?.cancel();
     _demoTicker = Timer.periodic(_demoTickInterval, _onDemoTick);
+
+    // 地図をスタート地点へ寄せる。_startDemoDriver は Firestore ストリームから
+    // 早く呼ばれ、まだ FlutterMap が初期化されていないと move() が例外を投げて
+    // 再生開始を阻害する。次フレームで、かつ例外を握って安全に行う。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _centeredOnce) return;
+      try {
+        _mapController.move(_currentPosition, _defaultZoom);
+        _centeredOnce = true;
+      } catch (_) {}
+    });
+
     if (mounted) setState(() {});
   }
 
@@ -1335,38 +1333,6 @@ class _VersusBattleScreenState extends State<VersusBattleScreen> {
                       choices: _demoSpeedChoices,
                       onChanged: _onChangeSpeed,
                       enabled: !speedLocked,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // 【デモ】立ち止まり中のヒント（ピンを刺すと再開）。
-          if (_pausedAtStop)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 96,
-              child: IgnorePointer(
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.72),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.pause_circle_filled,
-                            color: Colors.white, size: 18),
-                        SizedBox(width: 8),
-                        Text('立ち止まりました — ピンを刺すと再開します',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600)),
-                      ],
                     ),
                   ),
                 ),
